@@ -1,3 +1,207 @@
+# 🚀 Setup-Anleitung für Einsteiger (Fork)
+
+> Dieser Abschnitt wurde im Fork ergänzt und ist **nicht Teil des Originals von Reloisback**. Die ursprüngliche README beginnt weiter unten.
+
+Diese Anleitung führt Schritt für Schritt durch die Installation des Bots auf einem leeren Rechner. Sie setzt **keine Vorkenntnisse** voraus.
+
+## 1. Voraussetzungen
+
+| Was | Warum |
+|-----|-------|
+| Computer mit Windows, macOS oder Linux | Bot läuft 24/7 stabiler auf einem Server, lässt sich aber lokal testen |
+| Internetverbindung | Bot kommuniziert mit Discord und der WOS-API |
+| Discord-Account mit eigenem Server | Zum Einladen und Testen des Bots |
+| ca. 30 Minuten Zeit | Für die Erstinstallation |
+
+## 2. Python 3.12.4 installieren
+
+Der Bot benötigt **exakt Python 3.12.4** (neuere oder ältere Versionen können Probleme verursachen).
+
+### Windows
+
+1. Öffne https://www.python.org/downloads/release/python-3124/
+2. Scrolle nach unten zu **Files** und lade **Windows installer (64-bit)** herunter.
+3. Starte den Installer. **Wichtig:** Setze unten den Haken bei **„Add python.exe to PATH"** bevor du auf *Install Now* klickst.
+4. Prüfe die Installation: Drücke `Win + R`, tippe `cmd`, drücke Enter. Im schwarzen Fenster eingeben:
+   ```
+   python --version
+   ```
+   Die Ausgabe muss `Python 3.12.4` lauten.
+
+### macOS
+
+1. Installiere [Homebrew](https://brew.sh/) (falls noch nicht vorhanden):
+   ```bash
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+   ```
+2. Python installieren:
+   ```bash
+   brew install python@3.12
+   ```
+3. Prüfen:
+   ```bash
+   python3.12 --version
+   ```
+
+### Linux (Debian/Ubuntu)
+
+```bash
+sudo apt update
+sudo apt install -y python3.12 python3.12-venv python3-pip git
+python3.12 --version
+```
+
+## 3. Git installieren
+
+- **Windows:** https://git-scm.com/download/win herunterladen und mit Standardeinstellungen installieren.
+- **macOS:** `brew install git` (oder bereits via Xcode Command Line Tools vorhanden).
+- **Linux:** `sudo apt install git`
+
+Prüfen mit:
+```bash
+git --version
+```
+
+## 4. Discord-Bot erstellen und Token erzeugen
+
+1. Öffne https://discord.com/developers/applications
+2. Klicke oben rechts auf **New Application**, gib einen Namen ein, akzeptiere die Bedingungen.
+3. Im linken Menü **Bot** auswählen → **Add Bot** → **Yes, do it!**
+4. Unter **Token** auf **Reset Token** klicken und den angezeigten Token **sofort kopieren** (er wird nur einmal gezeigt).
+5. Auf derselben Seite folgende Schalter aktivieren:
+   - **Presence Intent**
+   - **Server Members Intent**
+   - **Message Content Intent**
+6. Speichern.
+
+### Bot auf den eigenen Discord-Server einladen
+
+1. Im linken Menü **OAuth2 → URL Generator**.
+2. Bei **Scopes** auswählen: `bot` und `applications.commands`.
+3. Bei **Bot Permissions** mindestens auswählen:
+   - `Manage Channels`, `View Channels`, `Send Messages`, `Embed Links`, `Attach Files`, `Read Message History`, `Use Slash Commands`, `Manage Messages`, `Mention Everyone`
+   (oder zur Vereinfachung **Administrator** — nur für Tests sinnvoll)
+4. Die unten generierte URL im Browser öffnen, Server auswählen, bestätigen.
+
+## 5. Repository klonen
+
+Im Terminal (Eingabeaufforderung bei Windows) in den Ordner wechseln, in dem der Bot liegen soll, dann:
+
+```bash
+git clone https://github.com/wosbot-4-dontgetscammed/Whiteout-Survival-Discord-Bot.git
+cd Whiteout-Survival-Discord-Bot
+```
+
+## 6. Virtuelle Python-Umgebung anlegen
+
+Eine virtuelle Umgebung (venv) trennt die Bot-Pakete vom Systempython und verhindert Konflikte.
+
+### Windows
+
+```bash
+python -m venv venv
+venv\Scripts\activate
+```
+
+### macOS / Linux
+
+```bash
+python3.12 -m venv venv
+source venv/bin/activate
+```
+
+Nach erfolgreicher Aktivierung steht `(venv)` am Anfang der Eingabezeile.
+
+## 7. Abhängigkeiten installieren
+
+Der Bot installiert benötigte Pakete normalerweise beim ersten Start automatisch. Wer es manuell vorab erledigen möchte:
+
+```bash
+pip install --upgrade pip
+pip install discord.py colorama requests aiohttp python-dotenv aiohttp-socks pytz pyzipper
+```
+
+## 8. `.env`-Datei konfigurieren
+
+1. Vorlage kopieren:
+   - **Windows:** `copy .env.example .env`
+   - **macOS/Linux:** `cp .env.example .env`
+2. Datei `.env` mit einem Texteditor (Notepad, VS Code, nano …) öffnen und folgende Werte eintragen:
+
+   ```ini
+   BOT_TOKEN=hier_dein_discord_bot_token
+   WOS_ENCRYPT_KEY=tB87#kPtkxqOS2
+   WOS_TEST_PLAYER_ID=244886619
+   WOSLAND_API_KEY=optional_falls_vorhanden
+   WOSLAND_BACKUP_API_KEY=optional_falls_vorhanden
+   WOSLAND_BACKUP_API_URL=https://wosland.com/apidc/backup_api/backup_api.php
+   ```
+
+   - `BOT_TOKEN` ist **Pflicht** (aus Schritt 4).
+   - `WOS_ENCRYPT_KEY` ist der bekannte WOS-Standardwert.
+   - `WOS_TEST_PLAYER_ID` ist eine beliebige gültige Spieler-ID zum Testen der API.
+   - Die `WOSLAND_*`-Werte sind optional und nur nötig, wenn du das WOSLand-Backup-Feature nutzt.
+
+3. **Wichtig:** Datei `.env` niemals teilen oder ins Repository committen — sie enthält dein Geheimnis. Das mitgelieferte `.gitignore` schützt sie bereits.
+
+## 9. Bot starten
+
+Mit aktiviertem venv:
+
+```bash
+python main.py
+```
+
+Beim ersten Start:
+- Fehlende Pakete werden automatisch nachinstalliert.
+- Datenbanken werden in `db/` angelegt.
+- Logs landen in `log/bot.log`.
+
+Wenn der Bot online ist, in deinem Discord-Server `/settings` eingeben — der erste Nutzer, der diesen Befehl ausführt, wird automatisch Hauptadministrator.
+
+## 10. Bot dauerhaft laufen lassen (optional)
+
+Beim Schließen des Terminals beendet sich der Bot. Für Dauerbetrieb gibt es mehrere Optionen:
+
+- **Linux mit systemd:** Service-Unit anlegen (Anleitung siehe Wiki).
+- **Windows:** [NSSM](https://nssm.cc/) als Dienst registrieren.
+- **macOS:** `launchd`-Plist anlegen oder einfach in einem `tmux`/`screen` laufen lassen.
+- **Cloud:** Günstige VPS-Hoster (Hetzner, Netcup, Contabo …) ab ca. 4 €/Monat.
+
+## 11. Bot aktualisieren
+
+```bash
+git pull
+source venv/bin/activate    # macOS/Linux
+# bzw. venv\Scripts\activate auf Windows
+pip install --upgrade pip
+python main.py
+```
+
+Updates aus dem Original-Repo von Reloisback ziehen (einmalig einrichten):
+```bash
+git remote add upstream https://github.com/Reloisback/Whiteout-Survival-Discord-Bot.git
+git fetch upstream
+git merge upstream/main
+```
+
+## 12. Probleme & Fehlersuche
+
+| Symptom | Ursache / Lösung |
+|---------|------------------|
+| `python` nicht gefunden | Bei Windows wurde der PATH-Haken im Installer vergessen → Python neu installieren |
+| `ModuleNotFoundError` | venv nicht aktiviert oder Pakete fehlen → Schritt 6 + 7 wiederholen |
+| Bot startet, reagiert aber nicht auf Befehle | Intents in Discord Developer Portal nicht aktiviert (Schritt 4.5) |
+| `Improper token` | `BOT_TOKEN` in `.env` falsch eingetragen oder mit Anführungszeichen umgeben — diese entfernen |
+| API-Fehler `40103` (CAPTCHA) | Normales Verhalten, Bot wiederholt automatisch |
+| Bot stoppt nach Terminal-Schließen | Siehe Schritt 10 |
+
+Bei weiteren Fragen Issue im Fork-Repo öffnen oder im offiziellen Discord von Reloisback nachfragen.
+
+---
+
+# 📜 Originale README von Reloisback
+
 A long time ago, while working on this project, my car caught fire, causing severe burns to my body. Before that, the people I trusted to hand over the project to, and those I gave authority to, betrayed me. While I was in the hospital receiving burn treatment, they stole all my data and projects. I was the one who originally started the entire bot and Discord project—they only stole my data. Soon, I will report everything they are selling for money to the WOS team. We are currently in contact, and I will release the entire project’s source code completely free of charge. You will achieve nothing with the project and members you stole from me. Our work with the authorities to fix all the vulnerabilities in White of Survival is ongoing. My warning to you at this stage: never invest your money into projects that will inevitably be shut down—always choose free projects.
 # Important information (01.08.2025)
 I don't have a Discord channel right now.
