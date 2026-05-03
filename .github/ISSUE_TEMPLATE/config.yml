@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Upstream repository (Reloisback)
+    url: https://github.com/Reloisback/Whiteout-Survival-Discord-Bot/issues
+    about: For bugs in functionality that exists upstream, or feature requests aimed at the original project, please open the issue against the upstream repo.
+  - name: Support the original developer
+    url: https://www.buymeacoffee.com/reloisback
+    about: This bot is and remains free thanks to Reloisback. If you'd like to support the project, buy them a coffee.
+  - name: Contact the original developer
+    url: mailto:usabsz@gmail.com
+    about: For commercial-use inquiries (required by the LICENSE) or upstream-related questions, contact Reloisback directly.
