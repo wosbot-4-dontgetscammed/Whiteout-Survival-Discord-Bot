@@ -1,0 +1,29 @@
+# Secrets
+.env
+.env.*
+!.env.example
+bot_token.txt
+
+# Runtime data
+db/
+log/
+giftcode_logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+venv_broken/
+venv_old_314/
+.venv/
+
+# Backups / scratch
+*.bak
+*.original.*
+
+# Upstream working copy (separate git checkout)
+upstream/
+
+# OS
+.DS_Store
