@@ -1,77 +1,77 @@
 # WOS Bot - Refactoring Plan
 
-## Status: ABGESCHLOSSEN
+## Status: COMPLETED
 
 ---
 
-## Umsetzungsstrategie
+## Implementation Strategy
 
-### Parallele Agents
+### Parallel Agents
 
-Die Umsetzung soll idealerweise mit **parallelen Agents** erfolgen, um die Arbeit zu beschleunigen:
+The implementation should ideally be carried out with **parallel agents** to speed up the work:
 
-- **Unabhaengige Dateien parallel bearbeiten:** Z.B. bei Step 2 (DB Layer) koennen mehrere Cogs gleichzeitig migriert werden, solange sie keine gegenseitigen Imports haben.
-- **Recherche und Umsetzung trennen:** Ein Agent prueft den Ist-Zustand, ein anderer setzt die Aenderungen um.
-- **Step 4 (Logging)** eignet sich besonders gut fuer Parallelisierung: Jede Datei kann unabhaengig migriert werden.
-- **Step 5 (Menustruktur)** kann teilweise parallel zu Step 4 laufen, da unterschiedliche Dateien betroffen sind.
+- **Process independent files in parallel:** For example, in Step 2 (DB Layer), multiple cogs can be migrated simultaneously, as long as they have no mutual imports.
+- **Separate research and implementation:** One agent inspects the current state, another applies the changes.
+- **Step 4 (Logging)** is particularly well suited for parallelization: each file can be migrated independently.
+- **Step 5 (Menu structure)** can partially run in parallel with Step 4, since different files are affected.
 
-### Pflicht: Verifizierung nach jedem Step
+### Mandatory: Verification after every step
 
-**KRITISCH:** Nach Abschluss jedes Steps MUSS eine Verifizierung stattfinden, bevor der naechste Step begonnen wird.
+**CRITICAL:** After completing each step, a verification MUST take place before the next step is started.
 
-#### Verifizierungs-Checkliste pro Step
+#### Verification checklist per step
 
-**Automatische Pruefungen (nach JEDEM Step):**
+**Automatic checks (after EVERY step):**
 
-1. **Syntax-Check:** `python -m py_compile` fuer jede geaenderte Datei
-2. **Import-Check:** `python -c "from cogs import <module>"` fuer jedes betroffene Modul
-3. **Bot-Start-Check:** Bot muss fehlerfrei starten (`python main.py` - pruefen ob alle Cogs laden)
+1. **Syntax check:** `python -m py_compile` for every changed file
+2. **Import check:** `python -c "from cogs import <module>"` for every affected module
+3. **Bot start check:** Bot must start without errors (`python main.py` - check that all cogs load)
 
-**Step-spezifische Pruefungen:**
+**Step-specific checks:**
 
-| Step | Zusaetzliche Verifizierung |
+| Step | Additional verification |
 |------|---------------------------|
-| 1. Secrets | Bot startet MIT `.env` UND mit Fallback-Defaults (ohne `.env`) |
-| 2. DB Layer | Jedes migrierte Cog einzeln testen: Commands ausfuehren, Console auf SQLite-Fehler pruefen |
-| 3. Utils | Alle Imports aufloesbar, alle verschobenen Klassen/Funktionen von allen Consumern erreichbar |
-| 4. Logging | Console-Output vorhanden und korrekt formatiert, keine verwaisten `print()` Calls |
-| 5. Menustruktur | JEDEN Menupfad durchklicken: Main -> Sub -> Back -> Main. Keine Dead-Ends |
-| 6. Cog-Splits | Alle Commands, Buttons, Modals und Pagination des gesplitteten Cogs funktionieren |
+| 1. Secrets | Bot starts WITH `.env` AND with fallback defaults (without `.env`) |
+| 2. DB Layer | Test each migrated cog individually: run commands, check console for SQLite errors |
+| 3. Utils | All imports resolvable, all relocated classes/functions reachable from all consumers |
+| 4. Logging | Console output present and correctly formatted, no orphaned `print()` calls |
+| 5. Menu structure | Click through EVERY menu path: Main -> Sub -> Back -> Main. No dead ends |
+| 6. Cog splits | All commands, buttons, modals and pagination of the split cog work |
 
-**Ablauf:**
+**Workflow:**
 
 ```
-Step N Umsetzung (idealerweise mit parallelen Agents)
+Step N implementation (ideally with parallel agents)
          |
          v
-Step N Verifizierung (automatische + manuelle Checks)
+Step N verification (automatic + manual checks)
          |
-    [PASS] ──→ Weiter zu Step N+1
+    [PASS] ──→ Continue to Step N+1
          |
-    [FAIL] ──→ Fehler beheben, erneut verifizieren
+    [FAIL] ──→ Fix the error, verify again
 ```
 
-**WICHTIG:**
-- Kein Step darf begonnen werden, solange der vorherige nicht vollstaendig verifiziert ist
-- Bei einem Fehler in der Verifizierung: Ursache analysieren und fixen, NICHT den naechsten Step starten
-- Nach dem Fix: Verifizierung des gesamten Steps wiederholen (nicht nur den Fix)
-- Der Bot muss nach JEDEM Step vollstaendig funktionsfaehig bleiben (kein Big-Bang-Rewrite)
+**IMPORTANT:**
+- No step may be started while the previous one is not fully verified
+- If a verification fails: analyze and fix the cause, do NOT start the next step
+- After the fix: repeat verification of the entire step (not just the fix)
+- The bot must remain fully functional after EVERY step (no big-bang rewrite)
 
 ---
 
-## Ausgangslage
+## Starting point
 
-- **20 Python-Dateien**, ~17.271 Zeilen Code
-- **8 SQLite-Datenbanken**, 135x `sqlite3.connect()` verstreut
-- **268x `print()`** statt strukturiertes Logging
-- **4x identische** `_create_monitored_task()` Kopien
-- **6x separate** Admin-Check Implementierungen
-- **Hardcoded Secrets** in config.py und backup_operations.py
-- **Menüstruktur** mit Dead-Ends, inkonsistenten Styles und fehlenden Back-Buttons
+- **20 Python files**, ~17,271 lines of code
+- **8 SQLite databases**, 135x `sqlite3.connect()` scattered around
+- **268x `print()`** instead of structured logging
+- **4x identical** `_create_monitored_task()` copies
+- **6x separate** admin check implementations
+- **Hardcoded secrets** in config.py and backup_operations.py
+- **Menu structure** with dead ends, inconsistent styles and missing back buttons
 
 ---
 
-## Abhängigkeiten / Reihenfolge
+## Dependencies / Order
 
 ```
 Step 1 (Secrets/.env)
@@ -80,31 +80,31 @@ Step 2 (Shared DB Layer)  ───→  Step 3 (Utility Module)
                                      ↓
                                 Step 4 (Python Logging)
                                      ↓
-                                Step 5 (Menustruktur)
+                                Step 5 (Menu structure)
                                      ↓
-                                Step 6 (Cog-Splits)
+                                Step 6 (Cog splits)
 ```
 
 ---
 
 ## Step 1: Secrets in `.env`
 
-**Ziel:** Alle hardcoded Secrets aus dem Quellcode entfernen.
-**Risiko:** NIEDRIG
-**Status:** [x] ERLEDIGT
+**Goal:** Remove all hardcoded secrets from the source code.
+**Risk:** LOW
+**Status:** [x] DONE
 
-### Neue Dateien
+### New files
 
-| Datei | Zweck |
+| File | Purpose |
 |-------|-------|
-| `.env` | Enthalt alle Secrets als Environment-Variablen |
-| `.env.example` | Template mit Platzhaltern (wird committed) |
-| `.gitignore` | Schutzt `.env`, `bot_token.txt`, `db/`, `__pycache__/`, `log/` |
+| `.env` | Contains all secrets as environment variables |
+| `.env.example` | Template with placeholders (will be committed) |
+| `.gitignore` | Protects `.env`, `bot_token.txt`, `db/`, `__pycache__/`, `log/` |
 
-### `.env` Inhalt
+### `.env` contents
 
 ```
-BOT_TOKEN=<Wert aus bot_token.txt>
+BOT_TOKEN=<value from bot_token.txt>
 WOS_ENCRYPT_KEY=tB87#kPtkxqOS2
 WOS_TEST_PLAYER_ID=244886619
 WOSLAND_API_KEY=serioyun_gift_api_key_2024
@@ -112,55 +112,55 @@ WOSLAND_BACKUP_API_KEY=serioyun_backup_api_key_2024
 WOSLAND_BACKUP_API_URL=https://wosland.com/apidc/backup_api/backup_api.php
 ```
 
-### Anderungen
+### Changes
 
-| Datei | Zeilen | Anderung |
+| File | Lines | Change |
 |-------|--------|----------|
-| `main.py` | oben + 249-257 | `load_dotenv()` hinzufugen, Token via `os.getenv('BOT_TOKEN')` statt `bot_token.txt` lesen |
-| `cogs/config.py` | 5, 20, 24 | `WOS_ENCRYPT_KEY = os.getenv("WOS_ENCRYPT_KEY", "tB87#kPtkxqOS2")` etc. mit Fallback-Defaults |
+| `main.py` | top + 249-257 | Add `load_dotenv()`, read token via `os.getenv('BOT_TOKEN')` instead of `bot_token.txt` |
+| `cogs/config.py` | 5, 20, 24 | `WOS_ENCRYPT_KEY = os.getenv("WOS_ENCRYPT_KEY", "tB87#kPtkxqOS2")` etc. with fallback defaults |
 | `cogs/backup_operations.py` | 21-22 | `self.api_url = os.getenv(...)`, `self.api_key = os.getenv(...)` |
 
-### Loschen (nach Bestatigung)
+### Delete (after confirmation)
 
 - `bot_token.txt`
 
-### Verifizierung
+### Verification
 
 ```bash
-# 1. Syntax-Check
+# 1. Syntax check
 python -m py_compile main.py
 python -m py_compile cogs/config.py
 python -m py_compile cogs/backup_operations.py
 
-# 2. Import-Check
+# 2. Import check
 python -c "from cogs.config import WOS_ENCRYPT_KEY, WOSLAND_API_KEY; print('OK')"
 
-# 3. Bot-Start-Check (mit .env)
-python main.py  # Muss fehlerfrei starten, alle Cogs laden
+# 3. Bot start check (with .env)
+python main.py  # Must start without errors, all cogs must load
 
-# 4. Funktionstest
-# - Gift Code Einloesung testen (beweist WOS_ENCRYPT_KEY geladen)
-# - Backup testen (beweist WOSLAND_BACKUP_API_KEY geladen)
+# 4. Functional test
+# - Test gift code redemption (proves WOS_ENCRYPT_KEY is loaded)
+# - Test backup (proves WOSLAND_BACKUP_API_KEY is loaded)
 
-# 5. Fallback-Test (ohne .env)
-# - .env temporaer umbenennen, Bot starten -> Defaults muessen greifen
+# 5. Fallback test (without .env)
+# - Temporarily rename .env, start bot -> defaults must take effect
 ```
 
-### Parallelisierung
+### Parallelization
 
-Keine sinnvoll — nur 3 Dateien betroffen, Aenderungen sind minimal.
+None makes sense — only 3 files are affected, changes are minimal.
 
 ---
 
 ## Step 2: Shared DB Layer
 
-**Ziel:** 135x `sqlite3.connect()` durch zentralen Connection Manager ersetzen.
-**Risiko:** MITTEL
-**Status:** [x] ERLEDIGT
+**Goal:** Replace 135x `sqlite3.connect()` with a centralized connection manager.
+**Risk:** MEDIUM
+**Status:** [x] DONE
 
-### Neue Datei
+### New file
 
-**`cogs/database.py`** (~80-100 Zeilen)
+**`cogs/database.py`** (~80-100 lines)
 
 ```python
 class DatabaseManager:
@@ -172,7 +172,7 @@ class DatabaseManager:
     """
 ```
 
-**Registry der 8 Datenbanken:**
+**Registry of the 8 databases:**
 
 ```
 "alliance"   -> db/alliance.sqlite
@@ -186,178 +186,178 @@ class DatabaseManager:
 ```
 
 **Features:**
-- Alle Connections mit WAL-Mode, `timeout=30`
-- Thread-Safe via `threading.Lock`
-- `get(name)` gibt gecachte Connection zuruck (erstellt bei erstem Zugriff)
-- `close_all()` fur Shutdown
-- `close()` auf managed Connections ist No-Op (verhindert versehentliches Schliessen)
+- All connections with WAL mode, `timeout=30`
+- Thread-safe via `threading.Lock`
+- `get(name)` returns a cached connection (created on first access)
+- `close_all()` for shutdown
+- `close()` on managed connections is a no-op (prevents accidental closing)
 
-### Anderungen in main.py
+### Changes in main.py
 
-| Zeilen | Anderung |
+| Lines | Change |
 |--------|----------|
-| nach 259 | `db = DatabaseManager.instance()` instanziieren |
-| 263-276 | `databases` Dict und Connection-Loop durch `db.get()` ersetzen |
-| 279-343 | `create_tables` nutzt `db.get("changes")`, `db.get("settings")` etc. |
-| 346-348 | Connection-Close entfernen (Manager ubernimmt Lifecycle) |
-| nach bot init | `bot.db = db` setzen |
-| main() Ende | `db.close_all()` nach `bot.start()` |
+| after 259 | Instantiate `db = DatabaseManager.instance()` |
+| 263-276 | Replace `databases` dict and connection loop with `db.get()` |
+| 279-343 | `create_tables` uses `db.get("changes")`, `db.get("settings")` etc. |
+| 346-348 | Remove connection close (manager handles lifecycle) |
+| after bot init | Set `bot.db = db` |
+| end of main() | `db.close_all()` after `bot.start()` |
 
-### Cog-Migration (Reihenfolge nach Risiko, niedrigstes zuerst)
+### Cog migration (order by risk, lowest first)
 
-Fur jedes Cog:
-1. `from .database import DatabaseManager` importieren
+For each cog:
+1. Import `from .database import DatabaseManager`
 2. `sqlite3.connect('db/X.sqlite')` -> `DatabaseManager.instance().get("X")`
-3. Doppelte WAL-Pragma Calls entfernen
-4. `cog_unload` Connection-Close entfernen (Manager besitzt Lifecycle)
+3. Remove duplicate WAL pragma calls
+4. Remove `cog_unload` connection close (manager owns lifecycle)
 
-| # | Datei | Aktuelle connect() Calls | Besonderheiten |
+| # | File | Current connect() calls | Notes |
 |---|-------|--------------------------|----------------|
-| 1 | `wel.py` | 6 inline `with` | Einfachstes Cog |
-| 2 | `w.py` | 4 Connections | Klein, einfach |
-| 3 | `changes.py` | 20 Connections | Viele inline `with` Statements |
-| 4 | `logsystem.py` | 2 in `__init__` | Nutzt `check_same_thread=False` -> entfernen |
-| 5 | `control.py` | 5 Connections | Hat `db_lock`, pruefen ob noch noetig |
-| 6 | `backup_operations.py` | 8 Connections | Mix aus persistent und inline |
-| 7 | `bot_operations.py` | 2 in `__init__` | Nutzt `check_same_thread=False` -> entfernen, `__del__` -> entfernen |
-| 8 | `id_channel.py` | 4+ Connections | Inline `with` Blocks |
-| 9 | `gift_scraper.py` | 2 in `__init__` | Eigene settings_conn |
-| 10 | `gift_operationsapi.py` | 3 in `__init__` | Fallt zuruck auf eigene Connection |
-| 11 | `alliance_member_operations.py` | 4 Connections | Moderate Komplexitat |
-| 12 | `alliance.py` | 4 in `__init__` | `__init__` bekommt aktuell `conn` Parameter -> entfernen |
-| 13 | `gift_operations.py` | 3 persistent + inline | Groesste Datei, vorsichtig migrieren |
-| 14 | `bear_trap.py` | 2 Connections | Zweitgroesste Datei |
+| 1 | `wel.py` | 6 inline `with` | Simplest cog |
+| 2 | `w.py` | 4 connections | Small, simple |
+| 3 | `changes.py` | 20 connections | Many inline `with` statements |
+| 4 | `logsystem.py` | 2 in `__init__` | Uses `check_same_thread=False` -> remove |
+| 5 | `control.py` | 5 connections | Has `db_lock`, check whether still needed |
+| 6 | `backup_operations.py` | 8 connections | Mix of persistent and inline |
+| 7 | `bot_operations.py` | 2 in `__init__` | Uses `check_same_thread=False` -> remove, `__del__` -> remove |
+| 8 | `id_channel.py` | 4+ connections | Inline `with` blocks |
+| 9 | `gift_scraper.py` | 2 in `__init__` | Own settings_conn |
+| 10 | `gift_operationsapi.py` | 3 in `__init__` | Falls back to its own connection |
+| 11 | `alliance_member_operations.py` | 4 connections | Moderate complexity |
+| 12 | `alliance.py` | 4 in `__init__` | `__init__` currently receives `conn` parameter -> remove |
+| 13 | `gift_operations.py` | 3 persistent + inline | Largest file, migrate carefully |
+| 14 | `bear_trap.py` | 2 connections | Second largest file |
 
-### Spezial: alliance.py
+### Special: alliance.py
 
-`Alliance.__init__(bot, conn)` bekommt aktuell `conn` explizit aus main.py. Nach Migration:
-- `conn` Parameter entfernen
-- `__init__` holt sich Connection selbst via `DatabaseManager.instance().get("alliance")`
-- `setup()` in main.py anpassen (kein conn mehr ubergeben)
+`Alliance.__init__(bot, conn)` currently receives `conn` explicitly from main.py. After migration:
+- Remove `conn` parameter
+- `__init__` fetches the connection itself via `DatabaseManager.instance().get("alliance")`
+- Adapt `setup()` in main.py (no longer pass conn)
 
-### Verifizierung
+### Verification
 
 ```bash
-# 1. Syntax-Check (nach jeder Cog-Migration)
+# 1. Syntax check (after each cog migration)
 python -m py_compile cogs/database.py
-python -m py_compile cogs/<migriertes_cog>.py
+python -m py_compile cogs/<migrated_cog>.py
 python -m py_compile main.py
 
-# 2. Import-Check
+# 2. Import check
 python -c "from cogs.database import DatabaseManager; db = DatabaseManager.instance(); print(db.get('settings')); db.close_all(); print('OK')"
 
-# 3. Bot-Start-Check
-python main.py  # Alle Cogs muessen laden, keine SQLite-Fehler
+# 3. Bot start check
+python main.py  # All cogs must load, no SQLite errors
 
-# 4. Pro migriertes Cog: Slash-Commands ausfuehren
-# 5. Console auf "database is locked" Errors pruefen
-# 6. Pruefen dass keine Connection versehentlich geschlossen wird
+# 4. Per migrated cog: run slash commands
+# 5. Check console for "database is locked" errors
+# 6. Verify that no connection is accidentally closed
 ```
 
-### Parallelisierung
+### Parallelization
 
-**Gut parallelisierbar:** Cogs 1-3 (wel, w, changes) koennen gleichzeitig migriert werden. Ebenso Cogs 4-6 (logsystem, control, backup) und Cogs 7-9 (bot_operations, id_channel, gift_scraper). Die letzten 5 Cogs (10-14) haben Cross-Dependencies und sollten sequentiell migriert werden.
+**Well parallelizable:** Cogs 1-3 (wel, w, changes) can be migrated simultaneously. Likewise cogs 4-6 (logsystem, control, backup) and cogs 7-9 (bot_operations, id_channel, gift_scraper). The last 5 cogs (10-14) have cross-dependencies and should be migrated sequentially.
 
 ```
 Agent 1: wel.py + changes.py        |  Agent 2: w.py + logsystem.py
-                    ↓ Verifizierung
+                    ↓ Verification
 Agent 1: control.py + backup_ops    |  Agent 2: bot_operations + id_channel
-                    ↓ Verifizierung
+                    ↓ Verification
 Agent 1: gift_scraper.py            |  Agent 2: gift_operationsapi.py
-                    ↓ Verifizierung
-Sequentiell: alliance_member_ops → alliance → gift_operations → bear_trap
-                    ↓ Verifizierung nach jedem einzelnen
+                    ↓ Verification
+Sequential: alliance_member_ops → alliance → gift_operations → bear_trap
+                    ↓ Verification after each individual one
 ```
 
 ---
 
 ## Step 3: Utility Module
 
-**Ziel:** Code-Duplikation eliminieren.
-**Risiko:** MITTEL
-**Status:** [x] ERLEDIGT
+**Goal:** Eliminate code duplication.
+**Risk:** MEDIUM
+**Status:** [x] DONE
 
-### Neue Datei
+### New file
 
-**`cogs/utils.py`** (~400-500 Zeilen)
+**`cogs/utils.py`** (~400-500 lines)
 
-### Was wird verschoben
+### What gets relocated
 
 #### 3a. `_create_monitored_task(coro, name=None)`
 
-| Aktuelle Datei | Zeile |
+| Current file | Line |
 |----------------|-------|
 | `gift_operations.py` | 23-29 |
 | `alliance_member_operations.py` | 19-25 |
 | `gift_scraper.py` | 15-21 |
 | `gift_operationsapi.py` | 16-22 |
 
-Alle 4 Kopien byte-identisch. Verschieben nach `utils.py`, in allen 4 Dateien durch Import ersetzen.
+All 4 copies are byte-identical. Move to `utils.py`, replace with import in all 4 files.
 
-#### 3b. Admin-Checks
+#### 3b. Admin checks
 
-**`check_admin(user_id: int) -> bool`** (pruft ob User irgendein Admin ist)
+**`check_admin(user_id: int) -> bool`** (checks whether the user is any kind of admin)
 
-| Aktuelle Datei | Zeile | Semantik |
+| Current file | Line | Semantics |
 |----------------|-------|----------|
-| `bear_trap.py` | 575-589 | Offnet eigene Connection, pruft `admin` Tabelle |
-| `alliance_member_operations.py` | 1371-1383 | Offnet eigene Connection, pruft `admin` Tabelle |
-| `gift_scraper.py` | 645-647 | Nutzt gespeicherten Cursor |
+| `bear_trap.py` | 575-589 | Opens its own connection, checks `admin` table |
+| `alliance_member_operations.py` | 1371-1383 | Opens its own connection, checks `admin` table |
+| `gift_scraper.py` | 645-647 | Uses stored cursor |
 
-**`check_global_admin(user_id: int) -> bool`** (pruft `is_initial = 1`)
+**`check_global_admin(user_id: int) -> bool`** (checks `is_initial = 1`)
 
-| Aktuelle Datei | Zeile | Semantik |
+| Current file | Line | Semantics |
 |----------------|-------|----------|
-| `gift_operations.py` | 1256-1277 | Offnet eigene Connection, pruft `admin WHERE is_initial = 1` |
-| `id_channel.py` | 370-383 | Offnet eigene Connection, pruft `admin WHERE is_initial` |
+| `gift_operations.py` | 1256-1277 | Opens its own connection, checks `admin WHERE is_initial = 1` |
+| `id_channel.py` | 370-383 | Opens its own connection, checks `admin WHERE is_initial` |
 
-Beide nutzen `DatabaseManager.instance().get("settings")` statt eigener Connections.
+Both use `DatabaseManager.instance().get("settings")` instead of their own connections.
 
 #### 3c. `fix_rtl(text: str) -> str`
 
-| Aktuelle Datei | Zeile |
+| Current file | Line |
 |----------------|-------|
 | `alliance_member_operations.py` | 74 |
 
-RTL-Text-Fix Helper. Verschieben nach `utils.py`.
+RTL text fix helper. Move to `utils.py`.
 
-#### 3d. `PaginationView` Klasse
+#### 3d. `PaginationView` class
 
-| Aktuelle Datei | Zeilen |
+| Current file | Lines |
 |----------------|--------|
 | `alliance_member_operations.py` | 27-72 |
 
-Generische UI-Komponente, nicht spezifisch fur Alliance-Member. Verschieben nach `utils.py`.
+Generic UI component, not specific to alliance member. Move to `utils.py`.
 
-#### 3e. `AllianceSelectView` Klasse
+#### 3e. `AllianceSelectView` class
 
-| Aktuelle Datei | Zeilen |
+| Current file | Lines |
 |----------------|--------|
 | `alliance_member_operations.py` | 1527-1844 |
 
-Importiert von 4 Cogs:
+Imported by 4 cogs:
 - `gift_operations.py:13`
 - `logsystem.py:5`
 - `bot_operations.py:7`
 - `changes.py:5`
 
-Verschieben nach `utils.py`.
+Move to `utils.py`.
 
-#### 3f. `PaginatedChannelView` Klasse
+#### 3f. `PaginatedChannelView` class
 
-| Aktuelle Datei | Zeilen |
+| Current file | Lines |
 |----------------|--------|
 | `alliance.py` | 1718-1795 |
 
-Importiert von:
+Imported by:
 - `logsystem.py:6`
 - `gift_operations.py:14`
 
-Verschieben nach `utils.py`.
+Move to `utils.py`.
 
-### Import-Updates
+### Import updates
 
-| Datei | Alter Import | Neuer Import |
+| File | Old import | New import |
 |-------|-------------|-------------|
 | `gift_operations.py:13` | `from .alliance_member_operations import AllianceSelectView` | `from .utils import AllianceSelectView` |
 | `gift_operations.py:14` | `from .alliance import PaginatedChannelView` | `from .utils import PaginatedChannelView` |
@@ -366,66 +366,66 @@ Verschieben nach `utils.py`.
 | `bot_operations.py:7` | `from .alliance_member_operations import AllianceSelectView` | `from .utils import AllianceSelectView` |
 | `changes.py:5` | `from .alliance_member_operations import AllianceSelectView` | `from .utils import AllianceSelectView` |
 
-### Ruckwartskompatibilitat
+### Backwards compatibility
 
-In den Original-Dateien Re-Exports beibehalten:
+Keep re-exports in the original files:
 
 ```python
-# alliance_member_operations.py (temporar)
+# alliance_member_operations.py (temporary)
 from .utils import AllianceSelectView, PaginationView, fix_rtl
 
-# alliance.py (temporar)
+# alliance.py (temporary)
 from .utils import PaginatedChannelView
 ```
 
-Diese Re-Exports nach Aktualisierung aller Imports entfernen.
+Remove these re-exports after all imports have been updated.
 
-### Verifizierung
+### Verification
 
 ```bash
-# 1. Syntax-Check
+# 1. Syntax check
 python -m py_compile cogs/utils.py
-# + alle geaenderten Dateien
+# + all changed files
 
-# 2. Import-Check — KRITISCH: Alle Consumer muessen die verschobenen Klassen finden
+# 2. Import check — CRITICAL: all consumers must find the relocated classes
 python -c "from cogs.utils import _create_monitored_task, check_admin, check_global_admin; print('OK')"
 python -c "from cogs.utils import PaginationView, AllianceSelectView, PaginatedChannelView; print('OK')"
 python -c "from cogs.utils import fix_rtl; print('OK')"
 
-# 3. Rueckwaertskompatibilitaet pruefen (Re-Exports)
+# 3. Check backwards compatibility (re-exports)
 python -c "from cogs.alliance_member_operations import AllianceSelectView; print('OK')"
 python -c "from cogs.alliance import PaginatedChannelView; print('OK')"
 
-# 4. Bot-Start-Check
-python main.py  # Alle Cogs muessen laden
+# 4. Bot start check
+python main.py  # All cogs must load
 
-# 5. Funktionstest
-# - check_admin: Als Admin UND als Nicht-Admin einen Command testen
-# - PaginationView: Paginierte Liste oeffnen, blaettern
-# - AllianceSelectView: In Gift Operations, Log System, Bot Operations, Changes testen
-# - PaginatedChannelView: Channel-Auswahl in Gift Operations und Log System testen
+# 5. Functional test
+# - check_admin: test a command both as admin AND as non-admin
+# - PaginationView: open a paginated list, page through it
+# - AllianceSelectView: test in Gift Operations, Log System, Bot Operations, Changes
+# - PaginatedChannelView: test channel selection in Gift Operations and Log System
 ```
 
-### Parallelisierung
+### Parallelization
 
-**Teilweise parallelisierbar:**
-- Agent 1: `utils.py` erstellen + `_create_monitored_task` verschieben (3a)
-- Agent 2: Admin-Check Funktionen vorbereiten (3b, haengt von DB Layer ab)
-- Nach Verifizierung von 3a+3b:
-- Agent 1: `PaginationView` + `fix_rtl` verschieben (3c+3d)
-- Agent 2: `AllianceSelectView` + `PaginatedChannelView` verschieben (3e+3f)
+**Partially parallelizable:**
+- Agent 1: create `utils.py` + move `_create_monitored_task` (3a)
+- Agent 2: prepare admin check functions (3b, depends on DB Layer)
+- After verification of 3a+3b:
+- Agent 1: move `PaginationView` + `fix_rtl` (3c+3d)
+- Agent 2: move `AllianceSelectView` + `PaginatedChannelView` (3e+3f)
 
 ---
 
 ## Step 4: Python `logging`
 
-**Ziel:** 268x `print()` + Colorama durch strukturiertes Logging ersetzen.
-**Risiko:** NIEDRIG
-**Status:** [x] ERLEDIGT
+**Goal:** Replace 268x `print()` + Colorama with structured logging.
+**Risk:** LOW
+**Status:** [x] DONE
 
-### Neue Datei
+### New file
 
-**`cogs/log_config.py`** (~40-50 Zeilen)
+**`cogs/log_config.py`** (~40-50 lines)
 
 ```python
 import logging
@@ -441,115 +441,115 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(f"wosbot.{name}")
 ```
 
-### Migrationsmuster
+### Migration pattern
 
 ```python
-# VORHER:
+# BEFORE:
 print(f"[SCRAPER] New code found: {code}")
 print(Fore.RED + f"Error: {e}" + Style.RESET_ALL)
 traceback.print_exc()
 
-# NACHHER:
+# AFTER:
 logger = get_logger("gift_scraper")
 logger.info(f"New code found: {code}")
 logger.error(f"Error: {e}")
-logger.exception(f"Error: {e}")  # inkl. Traceback
+logger.exception(f"Error: {e}")  # incl. traceback
 ```
 
-### Migration pro Datei (Reihenfolge nach Risiko)
+### Migration per file (order by risk)
 
-| # | Datei | print() Calls | Besonderheiten |
+| # | File | print() calls | Notes |
 |---|-------|---------------|----------------|
-| 1 | `main.py` | ~25 | Schwere Colorama-Nutzung (Fore.GREEN, Fore.RED etc.) |
-| 2 | `olddb.py` | ~5 | Klein, einfach |
+| 1 | `main.py` | ~25 | Heavy Colorama use (Fore.GREEN, Fore.RED etc.) |
+| 2 | `olddb.py` | ~5 | Small, simple |
 | 3 | `w.py` | ~2 | Minimal |
 | 4 | `wel.py` | ~3 | Minimal |
-| 5 | `logsystem.py` | ~3 | Klein |
-| 6 | `backup_operations.py` | ~10 | Mix aus print und Datei-Logging |
-| 7 | `changes.py` | ~5 | Moderat |
-| 8 | `id_channel.py` | ~5 | Hat eigenes File-Logging (`id_channel_log.txt`) |
-| 9 | `gift_operationsapi.py` | ~5 | API-Logging |
-| 10 | `gift_scraper.py` | ~10 | [SCRAPER] Prefix Pattern |
-| 11 | `control.py` | ~15 | Schwere Colorama-Nutzung |
-| 12 | `alliance_member_operations.py` | ~10 | Moderat |
-| 13 | `bear_trap.py` | ~20 | Viele traceback.print_exc() |
-| 14 | `gift_operations.py` | ~30 | Meiste Prints, komplexeste Datei |
+| 5 | `logsystem.py` | ~3 | Small |
+| 6 | `backup_operations.py` | ~10 | Mix of print and file logging |
+| 7 | `changes.py` | ~5 | Moderate |
+| 8 | `id_channel.py` | ~5 | Has its own file logging (`id_channel_log.txt`) |
+| 9 | `gift_operationsapi.py` | ~5 | API logging |
+| 10 | `gift_scraper.py` | ~10 | [SCRAPER] prefix pattern |
+| 11 | `control.py` | ~15 | Heavy Colorama use |
+| 12 | `alliance_member_operations.py` | ~10 | Moderate |
+| 13 | `bear_trap.py` | ~20 | Many traceback.print_exc() |
+| 14 | `gift_operations.py` | ~30 | Most prints, most complex file |
 
-### Manuelles File-Logging ersetzen
+### Replace manual file logging
 
-| Aktuell | Ersetzen durch |
+| Current | Replace with |
 |---------|---------------|
-| `log/giftlog.txt` (gift_operations.py) | Beibehalten als dediziertes Gift-Log, aber via `logging.FileHandler` |
-| `log/backuplog.txt` (backup_operations.py) | Via Logger mit FileHandler |
-| `id_channel_log.txt` (id_channel.py) | Via Logger mit FileHandler |
+| `log/giftlog.txt` (gift_operations.py) | Keep as a dedicated gift log, but via `logging.FileHandler` |
+| `log/backuplog.txt` (backup_operations.py) | Via logger with FileHandler |
+| `id_channel_log.txt` (id_channel.py) | Via logger with FileHandler |
 
-### Colorama entfernen
+### Remove Colorama
 
-Nach vollstandiger Migration aus folgenden Dateien entfernen:
-- `main.py` (import und Verwendung)
-- `control.py` (import und Verwendung)
+After full migration, remove from the following files:
+- `main.py` (import and usage)
+- `control.py` (import and usage)
 
-### Verifizierung
+### Verification
 
 ```bash
-# 1. Syntax-Check (nach jeder Datei)
+# 1. Syntax check (after each file)
 python -m py_compile cogs/log_config.py
-python -m py_compile cogs/<migrierte_datei>.py
+python -m py_compile cogs/<migrated_file>.py
 
-# 2. Import-Check
+# 2. Import check
 python -c "from cogs.log_config import get_logger; logger = get_logger('test'); logger.info('test'); print('OK')"
 
-# 3. Bot-Start-Check
-python main.py  # Console-Output muss formatiert erscheinen
+# 3. Bot start check
+python main.py  # Console output must appear formatted
 
-# 4. Verwaiste print() suchen
+# 4. Search for orphaned print()
 grep -rn "print(" cogs/*.py main.py --include="*.py" | grep -v "venv" | grep -v "__pycache__"
-# Ergebnis: 0 verbleibende print() Calls (ausser in externen Libs)
+# Result: 0 remaining print() calls (except in external libs)
 
-# 5. Log-Datei pruefen
-ls -la log/bot.log  # Muss existieren und beschrieben werden
+# 5. Check log file
+ls -la log/bot.log  # Must exist and be written to
 ```
 
-### Parallelisierung
+### Parallelization
 
-**Sehr gut parallelisierbar:** Jede Datei ist unabhaengig migrierbar.
+**Very well parallelizable:** each file can be migrated independently.
 
 ```
 Agent 1: main.py + olddb.py + w.py + wel.py
 Agent 2: logsystem.py + backup_operations.py + changes.py + id_channel.py
 Agent 3: gift_operationsapi.py + gift_scraper.py + control.py
-                    ↓ Verifizierung
+                    ↓ Verification
 Agent 1: alliance_member_operations.py + bear_trap.py
 Agent 2: gift_operations.py
-                    ↓ Verifizierung
+                    ↓ Verification
 ```
 
 ---
 
-## Step 5: Menustruktur fixen
+## Step 5: Fix menu structure
 
-**Ziel:** Konsistente, fehlerfreie Navigation ohne Dead-Ends.
-**Risiko:** NIEDRIG-MITTEL
-**Status:** [x] ERLEDIGT
+**Goal:** Consistent, error-free navigation without dead ends.
+**Risk:** LOW-MEDIUM
+**Status:** [x] DONE
 
-### 5a. Dead-Ends beheben (fehlende Zuruck-Buttons)
+### 5a. Fix dead ends (missing back buttons)
 
-| Menu | Problem | Losung | Datei | Klasse |
+| Menu | Problem | Solution | File | Class |
 |------|---------|--------|-------|--------|
-| Bear Trap | Kein Main Menu, kein Back | + `main_menu` Button + `back_other_features` Button | `bear_trap.py` | `BearTrapView` (Zeile 1748) |
-| ID Channel | Kein Main Menu, kein Back | + `main_menu` Button + `back_other_features` Button | `id_channel.py` | `IDChannelView` (Zeile 423) |
-| Gift Operations | Kein Main Menu | + `main_menu` Button | `gift_operations.py` | `GiftView` (Zeile 2481) |
-| Gift Scraper | Hat Main Menu via Alliance Cog, inkonsistent | Konsistenten `main_menu` Handler | `gift_scraper.py` | `ScraperView` (Zeile 784) |
+| Bear Trap | No main menu, no back | + `main_menu` button + `back_other_features` button | `bear_trap.py` | `BearTrapView` (line 1748) |
+| ID Channel | No main menu, no back | + `main_menu` button + `back_other_features` button | `id_channel.py` | `IDChannelView` (line 423) |
+| Gift Operations | No main menu | + `main_menu` button | `gift_operations.py` | `GiftView` (line 2481) |
+| Gift Scraper | Has main menu via Alliance cog, inconsistent | Consistent `main_menu` handler | `gift_scraper.py` | `ScraperView` (line 784) |
 
-**Navigationsschema fur ALLE Submenus:**
+**Navigation scheme for ALL submenus:**
 ```
-Jedes Submenu bekommt:
-Row letzte:
-  ├── ◀️ Back (ButtonStyle.secondary) -> zuruck zum Eltern-Menu
-  └── 🏠 Main Menu (ButtonStyle.secondary) -> zuruck zu /settings
+Every submenu gets:
+Last row:
+  ├── ◀️ Back (ButtonStyle.secondary) -> back to parent menu
+  └── 🏠 Main Menu (ButtonStyle.secondary) -> back to /settings
 ```
 
-**Hierarchie:**
+**Hierarchy:**
 ```
 /settings (Main Menu)
 ├── Alliance Operations      -> Back = Main Menu
@@ -561,28 +561,28 @@ Row letzte:
 ├── Other Features           -> Back = Main Menu
 │   ├── Bear Trap            -> Back = Other Features
 │   ├── ID Channel           -> Back = Other Features
-│   └── Backup System        -> Back = Other Features (hat schon Main Menu)
+│   └── Backup System        -> Back = Other Features (already has Main Menu)
 └── Gift Scraper             -> Back = Main Menu
 ```
 
-### 5b. Button-Styles standardisieren
+### 5b. Standardize button styles
 
-**Verbindliches Style-Schema:**
+**Mandatory style scheme:**
 
-| Aktion | Emoji | ButtonStyle | Beispiel |
+| Action | Emoji | ButtonStyle | Example |
 |--------|-------|-------------|----------|
-| Erstellen/Hinzufugen | ➕ | `.success` | Add Alliance, Add Admin, Create Gift Code |
-| Loschen/Entfernen | 🗑️ | `.danger` | Delete Alliance, Remove Admin, Delete Gift Code |
-| Bearbeiten | ✏️ | `.primary` | Edit Alliance |
-| Anzeigen/Listen | 📋 | `.primary` | View Alliances, List Gift Codes, View Admins |
-| Ausfuhren/Starten | ▶️ | `.success` | Use Gift Code, Run Scraper, Create Backup |
-| Einstellungen/Config | ⚙️ | `.secondary` | Auto Gift Settings, Toggle Sources |
-| Navigation zuruck | 🏠 / ◀️ | `.secondary` | Main Menu, Back |
-| Suchen | 🔍 | `.primary` | Check Alliance, Search FID |
+| Create/Add | ➕ | `.success` | Add Alliance, Add Admin, Create Gift Code |
+| Delete/Remove | 🗑️ | `.danger` | Delete Alliance, Remove Admin, Delete Gift Code |
+| Edit | ✏️ | `.primary` | Edit Alliance |
+| View/List | 📋 | `.primary` | View Alliances, List Gift Codes, View Admins |
+| Execute/Start | ▶️ | `.success` | Use Gift Code, Run Scraper, Create Backup |
+| Settings/Config | ⚙️ | `.secondary` | Auto Gift Settings, Toggle Sources |
+| Navigate back | 🏠 / ◀️ | `.secondary` | Main Menu, Back |
+| Search | 🔍 | `.primary` | Check Alliance, Search FID |
 
-**Betroffene Views mit ihren Korrekturen:**
+**Affected views with their corrections:**
 
-| Datei | Klasse | Button | Aktuell | Soll |
+| File | Class | Button | Current | Target |
 |-------|--------|--------|---------|------|
 | `gift_operations.py` | `GiftView` | Create Gift Code | 🎫 `.green` | ➕ `.success` |
 | `gift_operations.py` | `GiftView` | List Gift Codes | 📋 `.blurple` | 📋 `.primary` |
@@ -593,15 +593,15 @@ Row letzte:
 | `gift_operations.py` | `GiftView` | Use Gift Alliance | 🎯 `.primary` | ▶️ `.success` |
 | `backup_operations.py` | `BackupView` | Create Backup | 💾 `.primary` | ▶️ `.success` |
 | `backup_operations.py` | `BackupView` | Create/Change Password | 🔐 `.primary` | ⚙️ `.secondary` |
-| `bot_operations.py` | Bot Operations | View Admin Permissions (Label sagt "Delete") | `.danger` | Label korrigieren oder Button aufteilen |
+| `bot_operations.py` | Bot Operations | View Admin Permissions (label says "Delete") | `.danger` | Fix label or split button |
 
-### 5c. Custom-IDs prefixen (Konflikt-Vermeidung)
+### 5c. Prefix custom IDs (avoid conflicts)
 
-**Problem:** `main_menu` wird in 5+ Views mit identischem custom_id verwendet.
+**Problem:** `main_menu` is used in 5+ views with identical custom_id.
 
-**Losung:** Jede View bekommt geprefixte IDs:
+**Solution:** Each view gets prefixed IDs:
 
-| Alter custom_id | Neuer custom_id | View |
+| Old custom_id | New custom_id | View |
 |----------------|-----------------|------|
 | `main_menu` | `alliance_main_menu` | Alliance Operations View |
 | `main_menu` | `member_main_menu` | Member Operations View |
@@ -609,28 +609,28 @@ Row letzte:
 | `main_menu` | `gift_main_menu` | Gift Operations View |
 | `main_menu` | `other_main_menu` | Other Features View |
 | `main_menu` | `backup_main_menu` | Backup View |
-| `main_menu` | `bear_trap_main_menu` | Bear Trap View (NEU) |
-| `main_menu` | `id_channel_main_menu` | ID Channel View (NEU) |
-| `main_menu` | `scraper_main_menu` | Scraper View (existiert bereits korrekt) |
+| `main_menu` | `bear_trap_main_menu` | Bear Trap View (NEW) |
+| `main_menu` | `id_channel_main_menu` | ID Channel View (NEW) |
+| `main_menu` | `scraper_main_menu` | Scraper View (already correct) |
 
 **Pagination IDs:**
 
-| Alter custom_id | Neuer custom_id |
+| Old custom_id | New custom_id |
 |----------------|-----------------|
 | `next` / `previous` | `{context}_next` / `{context}_previous` |
 | `next_nick` / `previous_nick` | `history_nick_next` / `history_nick_previous` |
 
-**Handler-Anpassung:** Alle `on_interaction()` Listener die auf `custom_id == "main_menu"` prufen mussen auf den neuen prefixed ID prufen. Alternativ: mit `.startswith()` oder `.endswith("_main_menu")` matchen.
+**Handler adjustment:** All `on_interaction()` listeners that check `custom_id == "main_menu"` must check the new prefixed ID. Alternatively: match with `.startswith()` or `.endswith("_main_menu")`.
 
-### 5d. Fehlendes Error-Feedback
+### 5d. Missing error feedback
 
-| Datei | Zeile | Problem | Losung |
+| File | Line | Problem | Solution |
 |-------|-------|---------|--------|
-| `alliance.py` | 1422 | Stummes `pass` bei Interaction-Fehlern | Ephemeral Error-Embed senden |
-| `bear_trap.py` | diverse | Traceback wird geprinted, User sieht nichts | Ephemeral "Ein Fehler ist aufgetreten" senden |
-| `gift_operations.py` | diverse | Manche Fehler werden verschluckt | Konsistentes Error-Embed Pattern |
+| `alliance.py` | 1422 | Silent `pass` on interaction errors | Send ephemeral error embed |
+| `bear_trap.py` | various | Traceback is printed, user sees nothing | Send ephemeral "An error occurred" |
+| `gift_operations.py` | various | Some errors are swallowed | Consistent error embed pattern |
 
-**Standard Error-Response Pattern:**
+**Standard error response pattern:**
 
 ```python
 # In utils.py:
@@ -649,21 +649,21 @@ async def send_error(interaction, message="Ein Fehler ist aufgetreten."):
         pass
 ```
 
-### 5e. Embed-Farben standardisieren
+### 5e. Standardize embed colors
 
-| Typ | Farbe | Verwendung |
+| Type | Color | Usage |
 |-----|-------|-----------|
-| Menu/Navigation | `discord.Color.blue()` | Alle Submenu-Embeds |
-| Erfolg | `discord.Color.green()` | Erfolgreiche Aktionen |
-| Fehler | `discord.Color.red()` | Fehler und Unauthorized |
-| Warnung | `discord.Color.orange()` | Warnungen, teilweiser Erfolg |
-| Info/Fortschritt | `discord.Color.blue()` | Laufende Prozesse |
-| Scraper/Features | `discord.Color.teal()` | Kann bleiben als Akzent |
+| Menu/Navigation | `discord.Color.blue()` | All submenu embeds |
+| Success | `discord.Color.green()` | Successful actions |
+| Error | `discord.Color.red()` | Errors and unauthorized |
+| Warning | `discord.Color.orange()` | Warnings, partial success |
+| Info/Progress | `discord.Color.blue()` | Ongoing processes |
+| Scraper/Features | `discord.Color.teal()` | Can stay as an accent |
 
-### Verifizierung
+### Verification
 
 ```bash
-# 1. Syntax-Check
+# 1. Syntax check
 python -m py_compile cogs/bear_trap.py
 python -m py_compile cogs/id_channel.py
 python -m py_compile cogs/gift_operations.py
@@ -673,64 +673,64 @@ python -m py_compile cogs/backup_operations.py
 python -m py_compile cogs/bot_operations.py
 python -m py_compile cogs/other_features.py
 
-# 2. Bot-Start-Check
-python main.py  # Alle Cogs muessen laden
+# 2. Bot start check
+python main.py  # All cogs must load
 
-# 3. Custom-ID Duplikat-Check
+# 3. Custom ID duplicate check
 grep -rn "custom_id=" cogs/*.py | grep -v "venv" | sort -t'"' -k2 | uniq -d -f1
-# Ergebnis: Keine doppelten custom_ids mehr
+# Result: no duplicate custom_ids remaining
 
-# 4. Navigationspfad-Test (MANUELL im Discord - PFLICHT)
-# Pfad 1: /settings → Alliance Operations → Back (🏠) → Main Menu
-# Pfad 2: /settings → Member Operations → Back (🏠) → Main Menu
-# Pfad 3: /settings → Bot Operations → Back (🏠) → Main Menu
-# Pfad 4: /settings → Gift Operations → Back (🏠) → Main Menu
-# Pfad 5: /settings → Alliance History → Back (🏠) → Main Menu
-# Pfad 6: /settings → Other Features → Bear Trap → Back (◀️) → Other Features → Back (🏠) → Main Menu
-# Pfad 7: /settings → Other Features → ID Channel → Back (◀️) → Other Features → Back (🏠) → Main Menu
-# Pfad 8: /settings → Other Features → Backup System → Back (◀️) → Other Features → Back (🏠) → Main Menu
-# Pfad 9: /settings → Gift Scraper → Back (🏠) → Main Menu
-# Pfad 10: Jeden Button in jedem Submenu klicken → Kein Error, kein Dead-End
+# 4. Navigation path test (MANUAL in Discord - MANDATORY)
+# Path 1: /settings → Alliance Operations → Back (🏠) → Main Menu
+# Path 2: /settings → Member Operations → Back (🏠) → Main Menu
+# Path 3: /settings → Bot Operations → Back (🏠) → Main Menu
+# Path 4: /settings → Gift Operations → Back (🏠) → Main Menu
+# Path 5: /settings → Alliance History → Back (🏠) → Main Menu
+# Path 6: /settings → Other Features → Bear Trap → Back (◀️) → Other Features → Back (🏠) → Main Menu
+# Path 7: /settings → Other Features → ID Channel → Back (◀️) → Other Features → Back (🏠) → Main Menu
+# Path 8: /settings → Other Features → Backup System → Back (◀️) → Other Features → Back (🏠) → Main Menu
+# Path 9: /settings → Gift Scraper → Back (🏠) → Main Menu
+# Path 10: Click every button in every submenu → no error, no dead end
 ```
 
-### Parallelisierung
+### Parallelization
 
-**Gut parallelisierbar:** Die betroffenen Views sind in unterschiedlichen Dateien.
+**Well parallelizable:** the affected views are in different files.
 
 ```
-Agent 1: Dead-End Fixes (bear_trap.py, id_channel.py)
-Agent 2: Button-Styles + Emojis (gift_operations.py, backup_operations.py, bot_operations.py)
-Agent 3: Custom-ID Prefixing (alliance.py, andere Views)
-                    ↓ Verifizierung
-Agent 1: Error-Feedback Pattern (utils.py + alle Cogs)
-Agent 2: Embed-Farben standardisieren
-                    ↓ Verifizierung
+Agent 1: Dead-end fixes (bear_trap.py, id_channel.py)
+Agent 2: Button styles + emojis (gift_operations.py, backup_operations.py, bot_operations.py)
+Agent 3: Custom ID prefixing (alliance.py, other views)
+                    ↓ Verification
+Agent 1: Error feedback pattern (utils.py + all cogs)
+Agent 2: Standardize embed colors
+                    ↓ Verification
 ```
 
 ---
 
-## Step 6: Grosse Cogs aufteilen
+## Step 6: Split large cogs
 
-**Ziel:** Dateien unter ~500-600 Zeilen halten.
-**Risiko:** HOCH
-**Status:** [x] ERLEDIGT
+**Goal:** Keep files under ~500-600 lines.
+**Risk:** HIGH
+**Status:** [x] DONE
 
-**Wichtig:** Split-Dateien sind KEINE eigenen Cogs, sondern Module die vom Parent-Cog importiert werden. `load_cogs` in main.py muss NICHT geandert werden.
+**Important:** Split files are NOT separate cogs but modules imported by the parent cog. `load_cogs` in main.py does NOT need to be changed.
 
-### 6A: `gift_operations.py` (2871 Zeilen -> 4 Dateien)
+### 6A: `gift_operations.py` (2871 lines -> 4 files)
 
-| Neue Datei | Inhalt | Zeilen aus Original | ~Grosse |
+| New file | Contents | Lines from original | ~Size |
 |-----------|--------|--------------------|---------|
-| `gift_operations.py` | Cog-Klasse, __init__, encode_data, solve_captcha, get_stove_info_wos, claim_giftcode_rewards_wos, retry_missing_codes | ~1-500 | ~500 |
+| `gift_operations.py` | Cog class, __init__, encode_data, solve_captcha, get_stove_info_wos, claim_giftcode_rewards_wos, retry_missing_codes | ~1-500 | ~500 |
 | `gift_views.py` | GiftView, RetryFailedView, CreateGiftCodeModal, DeleteGiftCodeModal | ~2266-2871 | ~600 |
-| `gift_distribution.py` | use_giftcode_for_alliance, Auto-Gift-Logik, setup_giftcode_auto | ~1700-2265 | ~600 |
+| `gift_distribution.py` | use_giftcode_for_alliance, auto-gift logic, setup_giftcode_auto | ~1700-2265 | ~600 |
 | `gift_channel.py` | setup_gift_channel, delete_gift_channel, check_channels_loop | ~600-800 | ~200 |
 
-**Import-Kette:**
-- `gift_operations.py` importiert `gift_views.py` fur View-Klassen
-- `gift_views.py` bekommt Cog-Referenz via `__init__(self, cog)` (bestehender Pattern)
-- `gift_distribution.py` importiert aus `gift_operations.py` fur API-Methoden
-- Zirkulare Imports vermeiden via `TYPE_CHECKING`:
+**Import chain:**
+- `gift_operations.py` imports `gift_views.py` for view classes
+- `gift_views.py` receives cog reference via `__init__(self, cog)` (existing pattern)
+- `gift_distribution.py` imports from `gift_operations.py` for API methods
+- Avoid circular imports via `TYPE_CHECKING`:
 
 ```python
 from __future__ import annotations
@@ -739,103 +739,103 @@ if TYPE_CHECKING:
     from .gift_operations import GiftOperations
 ```
 
-### 6B: `bear_trap.py` (2569 Zeilen -> 4 Dateien)
+### 6B: `bear_trap.py` (2569 lines -> 4 files)
 
-| Neue Datei | Inhalt | Zeilen aus Original | ~Grosse |
+| New file | Contents | Lines from original | ~Size |
 |-----------|--------|--------------------|---------|
-| `bear_trap.py` | Cog-Klasse, DB-Setup, Notification-Loop, check_admin entfernt (-> utils) | 12-625 | ~625 |
-| `bear_trap_views.py` | BearTrapView (Hauptmenu), ChannelSelectView, ChannelSelectMenu, ImportEmbedModal | 1748-2569 | ~850 |
+| `bear_trap.py` | Cog class, DB setup, notification loop, check_admin removed (-> utils) | 12-625 | ~625 |
+| `bear_trap_views.py` | BearTrapView (main menu), ChannelSelectView, ChannelSelectMenu, ImportEmbedModal | 1748-2569 | ~850 |
 | `bear_trap_modals.py` | RepeatOptionView, RepeatIntervalModal, TextInputModal, TimeSelectModal, NotificationTypeView, CustomTimesModal, MentionTypeView, MentionSelectMenu, MessageTypeView | 626-1747 | ~1100 |
-| `bear_trap_embed.py` | EmbedEditorView (eigenstandig, gross, in sich geschlossen) | 864-1156 | ~300 |
+| `bear_trap_embed.py` | EmbedEditorView (standalone, large, self-contained) | 864-1156 | ~300 |
 
-Alle View/Modal-Klassen bekommen `cog` als Constructor-Parameter (bestehender Pattern).
+All view/modal classes receive `cog` as a constructor parameter (existing pattern).
 
-### 6C: `alliance_member_operations.py` (1844 -> ~1310 nach Step 3)
+### 6C: `alliance_member_operations.py` (1844 -> ~1310 after Step 3)
 
-Nach Step 3 schrumpft die Datei um ~534 Zeilen (PaginationView: ~45, _create_monitored_task: ~7, fix_rtl: ~2, AllianceSelectView: ~317, Re-Exports: ~163).
+After Step 3 the file shrinks by ~534 lines (PaginationView: ~45, _create_monitored_task: ~7, fix_rtl: ~2, AllianceSelectView: ~317, re-exports: ~163).
 
-~1310 Zeilen ist akzeptabel. Optional weiter aufteilen:
+~1310 lines is acceptable. Optionally split further:
 
-| Neue Datei | Inhalt | ~Grosse |
+| New file | Contents | ~Size |
 |-----------|--------|---------|
-| `alliance_member_operations.py` | Cog-Klasse (Member Add/Remove/List/Search) | ~900 |
-| `alliance_member_views.py` | Verbleibende View-Klassen spezifisch fur Member-Ops | ~400 |
+| `alliance_member_operations.py` | Cog class (member add/remove/list/search) | ~900 |
+| `alliance_member_views.py` | Remaining view classes specific to member ops | ~400 |
 
-### 6D: `alliance.py` (1795 -> ~1718 nach Step 3)
+### 6D: `alliance.py` (1795 -> ~1718 after Step 3)
 
-Nach Step 3 (PaginatedChannelView verschoben) optional aufteilen:
+After Step 3 (PaginatedChannelView relocated), optionally split:
 
-| Neue Datei | Inhalt | ~Grosse |
+| New file | Contents | ~Size |
 |-----------|--------|---------|
-| `alliance.py` | Cog-Klasse (CRUD, Settings, on_interaction) | ~1200 |
-| `alliance_views.py` | Alliance-spezifische View-Klassen | ~500 |
+| `alliance.py` | Cog class (CRUD, settings, on_interaction) | ~1200 |
+| `alliance_views.py` | Alliance-specific view classes | ~500 |
 
-### Risikovermeidung bei Splits
+### Risk avoidance during splits
 
-1. **Eine Datei nach der anderen** aufteilen
-2. **View/Modal-Klassen zuerst** verschieben (sind eigenstandig, referenzieren nur `self.cog`)
-3. **Ruckwartskompatible Re-Exports** in der Original-Datei beibehalten
-4. **Zirkulare Imports** via `TYPE_CHECKING` vermeiden
-5. **Nach jedem Split:** Alle Commands des betroffenen Cogs testen
+1. **Split one file at a time**
+2. **Move view/modal classes first** (they are standalone, only reference `self.cog`)
+3. **Keep backwards-compatible re-exports** in the original file
+4. **Avoid circular imports** via `TYPE_CHECKING`
+5. **After each split:** test all commands of the affected cog
 
-### Verifizierung (pro Split einzeln!)
+### Verification (per split individually!)
 
 ```bash
-# 1. Syntax-Check (ALLE neuen + geaenderten Dateien)
+# 1. Syntax check (ALL new + changed files)
 python -m py_compile cogs/gift_operations.py
 python -m py_compile cogs/gift_views.py
 python -m py_compile cogs/gift_distribution.py
 python -m py_compile cogs/gift_channel.py
-# (analog fuer bear_trap Splits)
+# (analogous for bear_trap splits)
 
-# 2. Import-Check — Keine zirkulaeren Imports
+# 2. Import check — no circular imports
 python -c "from cogs.gift_views import GiftView; print('OK')"
 python -c "from cogs.gift_distribution import *; print('OK')"
 python -c "from cogs.bear_trap_views import BearTrapView; print('OK')"
 python -c "from cogs.bear_trap_modals import TimeSelectModal; print('OK')"
 
-# 3. Bot-Start-Check
-python main.py  # Alle Cogs muessen laden, keine ImportErrors
+# 3. Bot start check
+python main.py  # All cogs must load, no ImportErrors
 
-# 4. Funktionstest pro gesplittetem Cog (MANUELL im Discord - PFLICHT)
+# 4. Functional test per split cog (MANUAL in Discord - MANDATORY)
 # gift_operations: Create, List, Delete Gift Code, Use for Alliance, Auto Gift, Gift Channel
 # bear_trap: Set Time (Discord + Web), Remove, View, Toggle Notifications
 # alliance_member: Add, Remove, View, Transfer Member
 # alliance: Add, Edit, Delete, View, Check Alliance
 
-# 5. Pruefen dass keine Funktionalitaet verloren ging
-# Vorher: Anzahl Slash-Commands + Buttons notieren
-# Nachher: Gleiche Anzahl vorhanden
+# 5. Verify that no functionality was lost
+# Before: note number of slash commands + buttons
+# After: same number present
 ```
 
-### Parallelisierung
+### Parallelization
 
-**Eingeschraenkt parallelisierbar:** Splits muessen nacheinander verifiziert werden, da sie sich gegenseitig beeinflussen koennten. Innerhalb eines Splits koennen aber neue Dateien parallel erstellt werden.
+**Limited parallelizability:** splits must be verified one after another, since they could affect each other. Within a split, however, new files can be created in parallel.
 
 ```
-Agent 1: gift_views.py erstellen      |  Agent 2: gift_distribution.py erstellen
-                    ↓ Verifizierung gift_operations Split
-Agent 1: bear_trap_views.py erstellen  |  Agent 2: bear_trap_modals.py + bear_trap_embed.py
-                    ↓ Verifizierung bear_trap Split
-Sequentiell: alliance_member_operations → alliance (optional)
-                    ↓ Verifizierung
+Agent 1: create gift_views.py        |  Agent 2: create gift_distribution.py
+                    ↓ Verification of gift_operations split
+Agent 1: create bear_trap_views.py   |  Agent 2: bear_trap_modals.py + bear_trap_embed.py
+                    ↓ Verification of bear_trap split
+Sequential: alliance_member_operations → alliance (optional)
+                    ↓ Verification
 ```
 
 ---
 
-## Zusammenfassung
+## Summary
 
-| Step | Neue Dateien | Geanderte Dateien | Risiko | Aufwand |
+| Step | New files | Changed files | Risk | Effort |
 |------|-------------|-------------------|--------|---------|
-| 1. Secrets/.env | 3 | 3 | Niedrig | Klein |
-| 2. DB Layer | 1 | 15 (alle Cogs + main) | Mittel | Gross |
-| 3. Utils | 1 | 10 | Mittel | Mittel |
-| 4. Logging | 1 | 15 (alle .py) | Niedrig | Mittel |
-| 5. Menustruktur | 0 | 8 (View-Klassen) | Niedrig-Mittel | Mittel |
-| 6. Cog-Splits | 8 | 4 | Hoch | Gross |
-| **Total** | **14 neue** | **alle geandert** | | |
+| 1. Secrets/.env | 3 | 3 | Low | Small |
+| 2. DB Layer | 1 | 15 (all cogs + main) | Medium | Large |
+| 3. Utils | 1 | 10 | Medium | Medium |
+| 4. Logging | 1 | 15 (all .py) | Low | Medium |
+| 5. Menu structure | 0 | 8 (view classes) | Low-Medium | Medium |
+| 6. Cog splits | 8 | 4 | High | Large |
+| **Total** | **14 new** | **all changed** | | |
 
-### Neue Dateien nach Abschluss
+### New files after completion
 
 ```
 cogs/
@@ -843,13 +843,13 @@ cogs/
 ├── utils.py             (Step 3 - Shared Utilities)
 ├── log_config.py        (Step 4 - Logging Setup)
 ├── gift_views.py        (Step 6A - Gift UI)
-├── gift_distribution.py (Step 6A - Gift Verteilung)
+├── gift_distribution.py (Step 6A - Gift Distribution)
 ├── gift_channel.py      (Step 6A - Gift Channel)
 ├── bear_trap_views.py   (Step 6B - Bear Trap UI)
 ├── bear_trap_modals.py  (Step 6B - Bear Trap Modals)
 ├── bear_trap_embed.py   (Step 6B - Embed Editor)
-├── ... (bestehende Dateien, verkleinert)
+├── ... (existing files, smaller)
 .env                     (Step 1 - Secrets)
 .env.example             (Step 1 - Template)
-.gitignore               (Step 1 - Schutz)
+.gitignore               (Step 1 - Protection)
 ```
