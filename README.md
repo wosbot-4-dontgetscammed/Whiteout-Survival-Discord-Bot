@@ -1,3 +1,17 @@
+# Whiteout Survival Discord Bot — Community Fork
+
+> **This is a community fork**, not the original project.
+>
+> - **Original / upstream:** [Reloisback/Whiteout-Survival-Discord-Bot](https://github.com/Reloisback/Whiteout-Survival-Discord-Bot) by **Reloisback** (`usabsz@gmail.com`).
+> - **This fork:** [wosbot-4-dontgetscammed/Whiteout-Survival-Discord-Bot](https://github.com/wosbot-4-dontgetscammed/Whiteout-Survival-Discord-Bot)
+> - **License:** Custom Usage License by Reloisback (see [`LICENSE`](LICENSE)). All restrictions apply unchanged. Commercial use requires written permission from Reloisback.
+> - **What changed in this fork:** see [`CHANGELOG.md`](CHANGELOG.md). In short: a beginner-friendly setup guide, environment-variable based secrets (`.env`), `requirements.txt`, and an in-progress refactoring of the cogs.
+> - **Original developer's preferred channels remain authoritative** for support and donations: [Buy Me a Coffee](https://www.buymeacoffee.com/reloisback) · `usabsz@gmail.com`.
+>
+> If you are looking for the canonical, fully maintained version, use the upstream repository linked above. This fork exists to make installation easier for newcomers and to track ongoing refactoring publicly.
+
+---
+
 # 🚀 Setup Guide for Beginners (Fork)
 
 > This section was added in the fork and is **not part of the original by Reloisback**. The original README continues below.
@@ -118,7 +132,7 @@ The bot normally installs required packages on first start. To do it manually up
 
 ```bash
 pip install --upgrade pip
-pip install discord.py colorama requests aiohttp python-dotenv aiohttp-socks pytz pyzipper
+pip install -r requirements.txt
 ```
 
 ## 8. Configure the `.env` file

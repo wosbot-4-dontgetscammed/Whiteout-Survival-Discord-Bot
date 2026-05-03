@@ -1,0 +1,8 @@
+discord.py
+colorama
+requests
+aiohttp
+python-dotenv
+aiohttp-socks
+pytz
+pyzipper
