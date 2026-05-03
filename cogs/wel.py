@@ -2,34 +2,42 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import sqlite3
+import asyncio
+from .database import DatabaseManager
+from .log_config import get_logger
+from .utils import get_global_admin_ids
+
+logger = get_logger("wel")
 
 class GNCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.conn = sqlite3.connect('db/settings.sqlite')
+        self.conn = DatabaseManager.instance().get("settings")
         self.c = self.conn.cursor()
-
-    def cog_unload(self):
-        if hasattr(self, 'conn'):
-            self.conn.close()
+        self._welcomed = False
 
     @commands.Cog.listener()
     async def on_ready(self):
+        if self._welcomed:
+            return
+        self._welcomed = True
         try:
-            with sqlite3.connect('db/settings.sqlite') as settings_db:
-                cursor = settings_db.cursor()
-                cursor.execute("SELECT id FROM admin WHERE is_initial = 1 LIMIT 1")
-                result = cursor.fetchone()
-            
-            if result:
-                admin_id = result[0]
+            admin_ids = get_global_admin_ids()
+
+            if admin_ids:
+                admin_id = admin_ids[0]
                 admin_user = await self.bot.fetch_user(admin_id)
-                
+
                 if admin_user:
-                    cursor.execute("SELECT value FROM auto LIMIT 1")
-                    auto_result = cursor.fetchone()
-                    auto_value = auto_result[0] if auto_result else 1
-                    
+                    settings_db = DatabaseManager.instance().get("settings")
+                    cursor = settings_db.cursor()
+                    try:
+                        cursor.execute("SELECT value FROM auto LIMIT 1")
+                        auto_result = cursor.fetchone()
+                        auto_value = auto_result[0] if auto_result else 1
+                    except sqlite3.OperationalError:
+                        auto_value = 1  # table doesn't exist yet
+
                     status_embed = discord.Embed(
                         title="🤖 Bot Successfully Activated",
                         description=(
@@ -59,59 +67,66 @@ class GNCommands(commands.Cog):
                     status_embed.set_footer(text="Thank you for using our bot! Feel free to contact for support.")
 
                     await admin_user.send(embed=status_embed)
+                    await asyncio.sleep(0.5)
 
-                    with sqlite3.connect('db/alliance.sqlite') as alliance_db:
-                        cursor = alliance_db.cursor()
-                        cursor.execute("SELECT alliance_id, name FROM alliance_list")
-                        alliances = cursor.fetchall()
+                    alliance_db = DatabaseManager.instance().get("alliance")
+                    cursor = alliance_db.cursor()
+                    cursor.execute("SELECT alliance_id, name FROM alliance_list")
+                    alliances = cursor.fetchall()
 
                     if alliances:
                         ALLIANCES_PER_PAGE = 5
                         alliance_info = []
-                        
+
                         for alliance_id, name in alliances:
                             info_parts = []
-                            
-                            with sqlite3.connect('db/users.sqlite') as users_db:
-                                cursor = users_db.cursor()
-                                cursor.execute("SELECT COUNT(*) FROM users WHERE alliance = ?", (alliance_id,))
-                                user_count = cursor.fetchone()[0]
-                                info_parts.append(f"👥 Members: {user_count}")
-                            
-                            with sqlite3.connect('db/alliance.sqlite') as alliance_db:
-                                cursor = alliance_db.cursor()
-                                cursor.execute("SELECT discord_server_id FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
-                                discord_server = cursor.fetchone()
-                                if discord_server and discord_server[0]:
-                                    info_parts.append(f"🌐 Server ID: {discord_server[0]}")
-                            
-                                cursor.execute("SELECT channel_id, interval FROM alliancesettings WHERE alliance_id = ?", (alliance_id,))
-                                settings = cursor.fetchone()
-                                if settings:
-                                    if settings[0]:
-                                        info_parts.append(f"📢 Channel: <#{settings[0]}>")
-                                    interval_text = f"⏱️ Auto Check: {settings[1]} minutes" if settings[1] > 0 else "⏱️ No Auto Check"
-                                    info_parts.append(interval_text)
-                            
-                            with sqlite3.connect('db/giftcode.sqlite') as gift_db:
-                                cursor = gift_db.cursor()
-                                cursor.execute("SELECT status FROM giftcodecontrol WHERE alliance_id = ?", (alliance_id,))
-                                gift_status = cursor.fetchone()
-                                gift_text = "🎁 Gift System: Active" if gift_status and gift_status[0] == 1 else "🎁 Gift System: Inactive"
-                                info_parts.append(gift_text)
-                                
-                                cursor.execute("SELECT channel_id FROM giftcode_channel WHERE alliance_id = ?", (alliance_id,))
-                                gift_channel = cursor.fetchone()
-                                if gift_channel and gift_channel[0]:
-                                    info_parts.append(f"🎉 Gift Channel: <#{gift_channel[0]}>")
-                            
+
+                            users_db = DatabaseManager.instance().get("users")
+                            cursor = users_db.cursor()
+                            cursor.execute("SELECT COUNT(*) FROM users WHERE alliance = ?", (alliance_id,))
+                            row = cursor.fetchone()
+                            user_count = row[0] if row else 0
+                            info_parts.append(f"👥 Members: {user_count}")
+
+                            alliance_db = DatabaseManager.instance().get("alliance")
+                            cursor = alliance_db.cursor()
+                            cursor.execute("SELECT discord_server_id FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
+                            discord_server = cursor.fetchone()
+                            if discord_server and discord_server[0]:
+                                server_id = discord_server[0]
+                                guild = self.bot.get_guild(server_id)
+                                if guild:
+                                    info_parts.append(f"🌐 Server: {guild.name}")
+                                else:
+                                    info_parts.append(f"🌐 Server ID: {server_id}")
+
+                            cursor.execute("SELECT channel_id, interval FROM alliancesettings WHERE alliance_id = ?", (alliance_id,))
+                            settings = cursor.fetchone()
+                            if settings:
+                                if settings[0]:
+                                    info_parts.append(f"📢 Channel: <#{settings[0]}>")
+                                interval_text = f"⏱️ Auto Check: {settings[1]} minutes" if settings[1] > 0 else "⏱️ No Auto Check"
+                                info_parts.append(interval_text)
+
+                            gift_db = DatabaseManager.instance().get("giftcode")
+                            cursor = gift_db.cursor()
+                            cursor.execute("SELECT status FROM giftcodecontrol WHERE alliance_id = ?", (alliance_id,))
+                            gift_status = cursor.fetchone()
+                            gift_text = "🎁 Gift System: Active" if gift_status and gift_status[0] == 1 else "🎁 Gift System: Inactive"
+                            info_parts.append(gift_text)
+
+                            cursor.execute("SELECT channel_id FROM giftcode_channel WHERE alliance_id = ?", (alliance_id,))
+                            gift_channel = cursor.fetchone()
+                            if gift_channel and gift_channel[0]:
+                                info_parts.append(f"🎉 Gift Channel: <#{gift_channel[0]}>")
+
                             alliance_info.append(
-                                f"**{name}**\n" + 
+                                f"**{name}**\n" +
                                 "\n".join(f"> {part}" for part in info_parts) +
                                 "\n━━━━━━━━━━━━━━━━━━━━━━"
                             )
 
-                        pages = [alliance_info[i:i + ALLIANCES_PER_PAGE] 
+                        pages = [alliance_info[i:i + ALLIANCES_PER_PAGE]
                                 for i in range(0, len(alliance_info), ALLIANCES_PER_PAGE)]
 
                         for page_num, page in enumerate(pages, 1):
@@ -121,6 +136,7 @@ class GNCommands(commands.Cog):
                             )
                             alliance_embed.description = "\n".join(page)
                             await admin_user.send(embed=alliance_embed)
+                            await asyncio.sleep(0.5)
 
                     else:
                         alliance_embed = discord.Embed(
@@ -129,14 +145,15 @@ class GNCommands(commands.Cog):
                             color=discord.Color.blue()
                         )
                         await admin_user.send(embed=alliance_embed)
+                        await asyncio.sleep(0.5)
 
-                    print("Activation messages sent to admin user.")
+                    logger.info("Activation messages sent to admin user.")
                 else:
-                    print(f"User with Admin ID {admin_id} not found.")
+                    logger.warning(f"User with Admin ID {admin_id} not found.")
             else:
-                print("No record found in the admin table.")
+                logger.warning("No record found in the admin table.")
         except Exception as e:
-            print(f"An error occurred: {e}")
+            logger.exception(f"An error occurred: {e}")
 
     @app_commands.command(name="channel", description="Learn the ID of a channel.")
     @app_commands.describe(channel="The channel you want to learn the ID of")

@@ -1,49 +1,45 @@
 import discord
 from discord.ext import commands
-import sqlite3
 from datetime import datetime
-from .alliance_member_operations import AllianceSelectView
+from .utils import AllianceSelectView, get_admin_info as _utils_get_admin_info, check_global_admin
+from .config import LEVEL_MAPPING
+from .database import DatabaseManager
+from .log_config import get_logger
+
+logger = get_logger("changes")
 
 class Changes(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.conn_settings = sqlite3.connect('db/settings.sqlite')
-        self.c_settings = self.conn_settings.cursor()
-        self.conn = sqlite3.connect('db/changes.sqlite')
-        self.cursor = self.conn.cursor()
+        db = DatabaseManager.instance()
+        self.conn_settings = db.get("settings")
+
+        self.conn = db.get("changes")
+
         self._create_tables()
-        
-        self.level_mapping = {
-            31: "30-1", 32: "30-2", 33: "30-3", 34: "30-4",
-            35: "FC 1", 36: "FC 1 - 1", 37: "FC 1 - 2", 38: "FC 1 - 3", 39: "FC 1 - 4",
-            40: "FC 2", 41: "FC 2 - 1", 42: "FC 2 - 2", 43: "FC 2 - 3", 44: "FC 2 - 4",
-            45: "FC 3", 46: "FC 3 - 1", 47: "FC 3 - 2", 48: "FC 3 - 3", 49: "FC 3 - 4",
-            50: "FC 4", 51: "FC 4 - 1", 52: "FC 4 - 2", 53: "FC 4 - 3", 54: "FC 4 - 4",
-            55: "FC 5", 56: "FC 5 - 1", 57: "FC 5 - 2", 58: "FC 5 - 3", 59: "FC 5 - 4",
-            60: "FC 6", 61: "FC 6 - 1", 62: "FC 6 - 2", 63: "FC 6 - 3", 64: "FC 6 - 4",
-            65: "FC 7", 66: "FC 7 - 1", 67: "FC 7 - 2", 68: "FC 7 - 3", 69: "FC 7 - 4",
-            70: "FC 8", 71: "FC 8 - 1", 72: "FC 8 - 2", 73: "FC 8 - 3", 74: "FC 8 - 4",
-            75: "FC 9", 76: "FC 9 - 1", 77: "FC 9 - 2", 78: "FC 9 - 3", 79: "FC 9 - 4",
-            80: "FC 10", 81: "FC 10 - 1", 82: "FC 10 - 2", 83: "FC 10 - 3", 84: "FC 10 - 4"
-        }
+
+        self.level_mapping = LEVEL_MAPPING
 
     def _create_tables(self):
-        self.cursor.execute("""
+        self.conn.execute("""
             CREATE TABLE IF NOT EXISTS furnace_changes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 fid INTEGER,
-                old_value INTEGER,
-                new_value INTEGER,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                old_furnace_lv INTEGER,
+                new_furnace_lv INTEGER,
+                change_date TEXT
+            )
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS nickname_changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fid INTEGER,
+                old_nickname TEXT,
+                new_nickname TEXT,
+                change_date TEXT
             )
         """)
         self.conn.commit()
-
-    def cog_unload(self):
-        if hasattr(self, 'cursor'):
-            self.cursor.close()
-        if hasattr(self, 'conn'):
-            self.conn.close()
 
     async def show_alliance_history_menu(self, interaction: discord.Interaction):
         try:
@@ -66,75 +62,66 @@ class Changes(commands.Cog):
             
         except Exception as e:
             if not any(error_code in str(e) for error_code in ["10062", "40060"]):
-                print(f"Show alliance history menu error: {e}")
+                logger.error(f"Show alliance history menu error: {e}")
 
     async def get_admin_info(self, user_id: int):
         try:
-            with sqlite3.connect('db/settings.sqlite') as settings_db:
-                cursor = settings_db.cursor()
-                cursor.execute("""
-                    SELECT id, is_initial
-                    FROM admin
-                    WHERE id = ?
-                """, (user_id,))
-                return cursor.fetchone()
+            return _utils_get_admin_info(user_id)
         except Exception as e:
-            print(f"Error in get_admin_info: {e}")
+            logger.error(f"Error in get_admin_info: {e}")
             return None
 
     async def get_admin_alliances(self, user_id: int, guild_id: int):
         try:
-            with sqlite3.connect('db/settings.sqlite') as settings_db:
-                cursor = settings_db.cursor()
-                cursor.execute("SELECT is_initial FROM admin WHERE id = ?", (user_id,))
-                admin_result = cursor.fetchone()
-                
-                if not admin_result:
-                    print(f"User {user_id} is not an admin")
-                    return [], [], False
-                    
-                is_initial = admin_result[0]
-                
+            admin_result = _utils_get_admin_info(user_id)
+
+            if not admin_result:
+                logger.info(f"User {user_id} is not an admin")
+                return [], [], False
+
+            is_initial = admin_result[1]
+
             if is_initial == 1:
-                with sqlite3.connect('db/alliance.sqlite') as alliance_db:
-                    cursor = alliance_db.cursor()
-                    cursor.execute("SELECT alliance_id, name FROM alliance_list ORDER BY name")
-                    alliances = cursor.fetchall()
-                    return alliances, [], True
-            
+                db = DatabaseManager.instance()
+                alliance_db = db.get("alliance")
+                cursor = alliance_db.cursor()
+                cursor.execute("SELECT alliance_id, name FROM alliance_list ORDER BY name")
+                alliances = cursor.fetchall()
+                return alliances, [], True
+
+            db = DatabaseManager.instance()
+            settings_db = db.get("settings")
             server_alliances = []
             special_alliances = []
-            
-            with sqlite3.connect('db/alliance.sqlite') as alliance_db:
-                cursor = alliance_db.cursor()
-                cursor.execute("""
-                    SELECT DISTINCT alliance_id, name 
-                    FROM alliance_list 
-                    WHERE discord_server_id = ?
-                    ORDER BY name
-                """, (guild_id,))
-                server_alliances = cursor.fetchall()
-            
-            with sqlite3.connect('db/settings.sqlite') as settings_db:
-                cursor = settings_db.cursor()
-                cursor.execute("""
-                    SELECT alliances_id 
-                    FROM adminserver 
-                    WHERE admin = ?
-                """, (user_id,))
-                special_alliance_ids = cursor.fetchall()
-                
+
+            alliance_db = db.get("alliance")
+            cursor = alliance_db.cursor()
+            cursor.execute("""
+                SELECT DISTINCT alliance_id, name
+                FROM alliance_list
+                WHERE discord_server_id = ?
+                ORDER BY name
+            """, (guild_id,))
+            server_alliances = cursor.fetchall()
+
+            cursor = settings_db.cursor()
+            cursor.execute("""
+                SELECT alliances_id
+                FROM adminserver
+                WHERE admin = ?
+            """, (user_id,))
+            special_alliance_ids = cursor.fetchall()
+
             if special_alliance_ids:
-                with sqlite3.connect('db/alliance.sqlite') as alliance_db:
-                    cursor = alliance_db.cursor()
-                    placeholders = ','.join('?' * len(special_alliance_ids))
-                    cursor.execute(f"""
-                        SELECT DISTINCT alliance_id, name
-                        FROM alliance_list
-                        WHERE alliance_id IN ({placeholders})
-                        ORDER BY name
-                    """, [aid[0] for aid in special_alliance_ids])
-                    special_alliances = cursor.fetchall()
+                cursor = alliance_db.cursor()
+                placeholders = ','.join('?' * len(special_alliance_ids))
+                cursor.execute(f"""
+                    SELECT DISTINCT alliance_id, name
+                    FROM alliance_list
+                    WHERE alliance_id IN ({placeholders})
+                    ORDER BY name
+                """, [aid[0] for aid in special_alliance_ids])
+                special_alliances = cursor.fetchall()
             
             all_alliances = list({(aid, name) for aid, name in (server_alliances + special_alliances)})
             
@@ -144,19 +131,19 @@ class Changes(commands.Cog):
             return all_alliances, special_alliances, False
                 
         except Exception as e:
-            print(f"Error in get_admin_alliances: {e}")
+            logger.error(f"Error in get_admin_alliances: {e}")
             return [], [], False
 
     async def show_furnace_history(self, interaction: discord.Interaction, fid: int):
         try:
-            self.cursor.execute("""
+            cursor = self.conn.execute("""
                 SELECT old_furnace_lv, new_furnace_lv, change_date 
                 FROM furnace_changes 
                 WHERE fid = ? 
                 ORDER BY change_date DESC
             """, (fid,))
             
-            changes = self.cursor.fetchall()
+            changes = cursor.fetchall()
             
             if not changes:
                 await interaction.followup.send(
@@ -165,12 +152,12 @@ class Changes(commands.Cog):
                 )
                 return
 
-            with sqlite3.connect('db/users.sqlite') as users_db:
-                cursor = users_db.cursor()
-                cursor.execute("SELECT nickname, furnace_lv FROM users WHERE fid = ?", (fid,))
-                user_info = cursor.fetchone()
-                nickname = user_info[0] if user_info else "Unknown"
-                current_level = user_info[1] if user_info else 0
+            users_db = DatabaseManager.instance().get("users")
+            cursor = users_db.cursor()
+            cursor.execute("SELECT nickname, furnace_lv FROM users WHERE fid = ?", (fid,))
+            user_info = cursor.fetchone()
+            nickname = user_info[0] if user_info else "Unknown"
+            current_level = user_info[1] if user_info else 0
 
             embed = discord.Embed(
                 title=f"🔥 Furnace Level History",
@@ -195,7 +182,7 @@ class Changes(commands.Cog):
             await interaction.followup.send(embed=embed)
 
         except Exception as e:
-            print(f"Error in show_furnace_history: {e}")
+            logger.error(f"Error in show_furnace_history: {e}")
             await interaction.followup.send(
                 "❌ An error occurred while displaying the furnace history.",
                 ephemeral=True
@@ -203,14 +190,14 @@ class Changes(commands.Cog):
 
     async def show_nickname_history(self, interaction: discord.Interaction, fid: int):
         try:
-            self.cursor.execute("""
+            cursor = self.conn.execute("""
                 SELECT old_nickname, new_nickname, change_date 
                 FROM nickname_changes 
                 WHERE fid = ? 
                 ORDER BY change_date DESC
             """, (fid,))
             
-            changes = self.cursor.fetchall()
+            changes = cursor.fetchall()
             
             if not changes:
                 await interaction.followup.send(
@@ -219,12 +206,12 @@ class Changes(commands.Cog):
                 )
                 return
 
-            with sqlite3.connect('db/users.sqlite') as users_db:
-                cursor = users_db.cursor()
-                cursor.execute("SELECT nickname, furnace_lv FROM users WHERE fid = ?", (fid,))
-                user_info = cursor.fetchone()
-                nickname = user_info[0] if user_info else "Unknown"
-                current_level = user_info[1] if user_info else 0
+            users_db = DatabaseManager.instance().get("users")
+            cursor = users_db.cursor()
+            cursor.execute("SELECT nickname, furnace_lv FROM users WHERE fid = ?", (fid,))
+            user_info = cursor.fetchone()
+            nickname = user_info[0] if user_info else "Unknown"
+            current_level = user_info[1] if user_info else 0
 
             embed = discord.Embed(
                 title=f"📝 Nickname History",
@@ -247,7 +234,7 @@ class Changes(commands.Cog):
             await interaction.followup.send(embed=embed)
 
         except Exception as e:
-            print(f"Error in show_nickname_history: {e}")
+            logger.error(f"Error in show_nickname_history: {e}")
             await interaction.followup.send(
                 "❌ An error occurred while displaying the nickname history.",
                 ephemeral=True
@@ -255,20 +242,22 @@ class Changes(commands.Cog):
 
     async def show_member_list_nickname(self, interaction: discord.Interaction, alliance_id: int):
         try:
-            with sqlite3.connect('db/alliance.sqlite') as alliance_db:
-                cursor = alliance_db.cursor()
-                cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
-                alliance_name = cursor.fetchone()[0]
+            db = DatabaseManager.instance()
+            alliance_db = db.get("alliance")
+            cursor = alliance_db.cursor()
+            cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
+            row = cursor.fetchone()
+            alliance_name = row[0] if row else "Unknown"
 
-            with sqlite3.connect('db/users.sqlite') as users_db:
-                cursor = users_db.cursor()
-                cursor.execute("""
-                    SELECT fid, nickname, furnace_lv
-                    FROM users 
-                    WHERE alliance = ? 
-                    ORDER BY furnace_lv DESC, nickname
-                """, (alliance_id,))
-                members = cursor.fetchall()
+            users_db = db.get("users")
+            cursor = users_db.cursor()
+            cursor.execute("""
+                SELECT fid, nickname, furnace_lv
+                FROM users
+                WHERE alliance = ?
+                ORDER BY furnace_lv DESC, nickname
+            """, (alliance_id,))
+            members = cursor.fetchall()
 
             if not members:
                 await interaction.response.send_message(
@@ -297,7 +286,7 @@ class Changes(commands.Cog):
             )
 
         except Exception as e:
-            print(f"Error in show_member_list_nickname: {e}")
+            logger.error(f"Error in show_member_list_nickname: {e}")
             await interaction.response.send_message(
                 "❌ An error occurred while displaying the member list.",
                 ephemeral=True
@@ -305,29 +294,44 @@ class Changes(commands.Cog):
 
     async def show_recent_changes(self, interaction: discord.Interaction, alliance_name: str, hours: int):
         try:
-            with sqlite3.connect('db/alliance.sqlite') as alliance_db:
-                cursor = alliance_db.cursor()
-                cursor.execute("SELECT alliance_id FROM alliance_list WHERE name = ?", (alliance_name,))
-                alliance_id = cursor.fetchone()[0]
+            db = DatabaseManager.instance()
+            alliance_db = db.get("alliance")
+            cursor = alliance_db.cursor()
+            cursor.execute("SELECT alliance_id FROM alliance_list WHERE name = ?", (alliance_name,))
+            row = cursor.fetchone()
+            if not row:
+                await interaction.followup.send(
+                    f"❌ Alliance '{alliance_name}' not found.",
+                    ephemeral=True
+                )
+                return
+            alliance_id = row[0]
 
-            with sqlite3.connect('db/users.sqlite') as users_db:
-                cursor = users_db.cursor()
-                cursor.execute("""
-                    SELECT fid, nickname 
-                    FROM users 
-                    WHERE alliance = ?
-                """, (alliance_id,))
-                members = {fid: name for fid, name in cursor.fetchall()}
+            users_db = db.get("users")
+            cursor = users_db.cursor()
+            cursor.execute("""
+                SELECT fid, nickname
+                FROM users
+                WHERE alliance = ?
+            """, (alliance_id,))
+            members = {fid: name for fid, name in cursor.fetchall()}
 
-            self.cursor.execute("""
-                SELECT fid, old_furnace_lv, new_furnace_lv, change_date 
-                FROM furnace_changes 
+            if not members:
+                await interaction.followup.send(
+                    f"No members found in alliance '{alliance_name}'.",
+                    ephemeral=True
+                )
+                return
+
+            cursor = self.conn.execute("""
+                SELECT fid, old_furnace_lv, new_furnace_lv, change_date
+                FROM furnace_changes
                 WHERE fid IN ({})
-                AND change_date >= datetime('now', '-{} hours')
+                AND change_date >= datetime('now', '-' || ? || ' hours')
                 ORDER BY change_date DESC
-            """.format(','.join('?' * len(members)), hours), tuple(members.keys()))
+            """.format(','.join('?' * len(members))), (*members.keys(), hours))
             
-            changes = self.cursor.fetchall()
+            changes = cursor.fetchall()
 
             if not changes:
                 await interaction.followup.send(
@@ -342,7 +346,7 @@ class Changes(commands.Cog):
             await interaction.followup.send(embed=view.get_embed(), view=view)
 
         except Exception as e:
-            print(f"Error in show_recent_changes: {e}")
+            logger.error(f"Error in show_recent_changes: {e}")
             await interaction.followup.send(
                 "❌ An error occurred while showing recent changes.",
                 ephemeral=True
@@ -350,29 +354,44 @@ class Changes(commands.Cog):
 
     async def show_recent_nickname_changes(self, interaction: discord.Interaction, alliance_name: str, hours: int):
         try:
-            with sqlite3.connect('db/alliance.sqlite') as alliance_db:
-                cursor = alliance_db.cursor()
-                cursor.execute("SELECT alliance_id FROM alliance_list WHERE name = ?", (alliance_name,))
-                alliance_id = cursor.fetchone()[0]
+            db = DatabaseManager.instance()
+            alliance_db = db.get("alliance")
+            cursor = alliance_db.cursor()
+            cursor.execute("SELECT alliance_id FROM alliance_list WHERE name = ?", (alliance_name,))
+            row = cursor.fetchone()
+            if not row:
+                await interaction.followup.send(
+                    f"❌ Alliance '{alliance_name}' not found.",
+                    ephemeral=True
+                )
+                return
+            alliance_id = row[0]
 
-            with sqlite3.connect('db/users.sqlite') as users_db:
-                cursor = users_db.cursor()
-                cursor.execute("""
-                    SELECT fid, nickname 
-                    FROM users 
-                    WHERE alliance = ?
-                """, (alliance_id,))
-                members = {fid: name for fid, name in cursor.fetchall()}
+            users_db = db.get("users")
+            cursor = users_db.cursor()
+            cursor.execute("""
+                SELECT fid, nickname
+                FROM users
+                WHERE alliance = ?
+            """, (alliance_id,))
+            members = {fid: name for fid, name in cursor.fetchall()}
 
-            self.cursor.execute("""
-                SELECT fid, old_nickname, new_nickname, change_date 
-                FROM nickname_changes 
+            if not members:
+                await interaction.followup.send(
+                    f"No members found in alliance '{alliance_name}'.",
+                    ephemeral=True
+                )
+                return
+
+            cursor = self.conn.execute("""
+                SELECT fid, old_nickname, new_nickname, change_date
+                FROM nickname_changes
                 WHERE fid IN ({})
-                AND change_date >= datetime('now', '-{} hours')
+                AND change_date >= datetime('now', '-' || ? || ' hours')
                 ORDER BY change_date DESC
-            """.format(','.join('?' * len(members)), hours), tuple(members.keys()))
+            """.format(','.join('?' * len(members))), (*members.keys(), hours))
             
-            changes = self.cursor.fetchall()
+            changes = cursor.fetchall()
 
             if not changes:
                 await interaction.followup.send(
@@ -387,7 +406,7 @@ class Changes(commands.Cog):
             await interaction.followup.send(embed=view.get_embed(), view=view)
 
         except Exception as e:
-            print(f"Error in show_recent_nickname_changes: {e}")
+            logger.error(f"Error in show_recent_nickname_changes: {e}")
             await interaction.followup.send(
                 "❌ An error occurred while showing recent changes.",
                 ephemeral=True
@@ -433,12 +452,13 @@ class HistoryView(discord.ui.View):
             alliances, special_alliances, is_global = available_alliances
 
             alliances_with_counts = []
+            users_db = DatabaseManager.instance().get("users")
             for alliance_id, name in alliances:
-                with sqlite3.connect('db/users.sqlite') as users_db:
-                    cursor = users_db.cursor()
-                    cursor.execute("SELECT COUNT(*) FROM users WHERE alliance = ?", (alliance_id,))
-                    member_count = cursor.fetchone()[0]
-                    alliances_with_counts.append((alliance_id, name, member_count))
+                cursor = users_db.cursor()
+                cursor.execute("SELECT COUNT(*) FROM users WHERE alliance = ?", (alliance_id,))
+                row = cursor.fetchone()
+                member_count = row[0] if row else 0
+                alliances_with_counts.append((alliance_id, name, member_count))
 
             special_alliance_text = ""
             if special_alliances:
@@ -470,7 +490,7 @@ class HistoryView(discord.ui.View):
                     alliance_id = int(view.current_select.values[0])
                     await self.member_callback(select_interaction, alliance_id)
                 except Exception as e:
-                    print(f"Error in alliance selection: {e}")
+                    logger.error(f"Error in alliance selection: {e}")
                     if not select_interaction.response.is_done():
                         await select_interaction.response.send_message(
                             "❌ An error occurred while processing your selection.",
@@ -491,7 +511,7 @@ class HistoryView(discord.ui.View):
             )
 
         except Exception as e:
-            print(f"Error in furnace_changes_button: {e}")
+            logger.error(f"Error in furnace_changes_button: {e}")
             await interaction.response.send_message(
                 "❌ An error occurred while processing the request.",
                 ephemeral=True
@@ -499,15 +519,16 @@ class HistoryView(discord.ui.View):
 
     async def member_callback(self, interaction: discord.Interaction, alliance_id: int):
         try:
-            with sqlite3.connect('db/users.sqlite') as users_db:
-                cursor = users_db.cursor()
-                cursor.execute("""
-                    SELECT fid, nickname, furnace_lv 
-                    FROM users 
-                    WHERE alliance = ? 
-                    ORDER BY furnace_lv DESC, nickname
-                """, (alliance_id,))
-                members = cursor.fetchall()
+            db = DatabaseManager.instance()
+            users_db = db.get("users")
+            cursor = users_db.cursor()
+            cursor.execute("""
+                SELECT fid, nickname, furnace_lv
+                FROM users
+                WHERE alliance = ?
+                ORDER BY furnace_lv DESC, nickname
+            """, (alliance_id,))
+            members = cursor.fetchall()
 
             if not members:
                 await interaction.response.send_message(
@@ -516,10 +537,11 @@ class HistoryView(discord.ui.View):
                 )
                 return
 
-            with sqlite3.connect('db/alliance.sqlite') as alliance_db:
-                cursor = alliance_db.cursor()
-                cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
-                alliance_name = cursor.fetchone()[0]
+            alliance_db = db.get("alliance")
+            cursor = alliance_db.cursor()
+            cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
+            row = cursor.fetchone()
+            alliance_name = row[0] if row else "Unknown"
 
             view = MemberListView(self.cog, members, alliance_name)
             
@@ -538,7 +560,7 @@ class HistoryView(discord.ui.View):
             await interaction.response.edit_message(embed=embed, view=view)
 
         except Exception as e:
-            print(f"Error in member_callback: {e}")
+            logger.error(f"Error in member_callback: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
                     "❌ An error occurred while showing member list.",
@@ -582,12 +604,13 @@ class HistoryView(discord.ui.View):
             alliances, special_alliances, is_global = available_alliances
 
             alliances_with_counts = []
+            users_db = DatabaseManager.instance().get("users")
             for alliance_id, name in alliances:
-                with sqlite3.connect('db/users.sqlite') as users_db:
-                    cursor = users_db.cursor()
-                    cursor.execute("SELECT COUNT(*) FROM users WHERE alliance = ?", (alliance_id,))
-                    member_count = cursor.fetchone()[0]
-                    alliances_with_counts.append((alliance_id, name, member_count))
+                cursor = users_db.cursor()
+                cursor.execute("SELECT COUNT(*) FROM users WHERE alliance = ?", (alliance_id,))
+                row = cursor.fetchone()
+                member_count = row[0] if row else 0
+                alliances_with_counts.append((alliance_id, name, member_count))
 
             special_alliance_text = ""
             if special_alliances:
@@ -619,7 +642,7 @@ class HistoryView(discord.ui.View):
                     alliance_id = int(view.current_select.values[0])
                     await self.cog.show_member_list_nickname(select_interaction, alliance_id)
                 except Exception as e:
-                    print(f"Error in alliance selection: {e}")
+                    logger.error(f"Error in alliance selection: {e}")
                     if not select_interaction.response.is_done():
                         await select_interaction.response.send_message(
                             "❌ An error occurred while processing your selection.",
@@ -640,7 +663,7 @@ class HistoryView(discord.ui.View):
             )
 
         except Exception as e:
-            print(f"Error in nickname_changes_button: {e}")
+            logger.error(f"Error in nickname_changes_button: {e}")
             await interaction.response.send_message(
                 "❌ An error occurred while processing the request.",
                 ephemeral=True
@@ -650,7 +673,7 @@ class HistoryView(discord.ui.View):
         label="Main Menu",
         emoji="🏠",
         style=discord.ButtonStyle.secondary,
-        custom_id="main_menu",
+        custom_id="changes_main_menu",
         row=1
     )
     async def main_menu_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -667,7 +690,7 @@ class HistoryView(discord.ui.View):
                     ephemeral=True
                 )
         except Exception as e:
-            print(f"[ERROR] Main Menu error in changes: {e}")
+            logger.error(f"Main Menu error in changes: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
                     "An error occurred while returning to the main menu.",
@@ -685,7 +708,7 @@ class HistoryView(discord.ui.View):
                 await interaction.response.defer()
             await self.cog.show_recent_changes(interaction, self.alliance_name, hours=1)
         except Exception as e:
-            print(f"Error in last_hour_callback: {e}")
+            logger.error(f"Error in last_hour_callback: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
                     "❌ An error occurred while showing recent changes.",
@@ -703,7 +726,7 @@ class HistoryView(discord.ui.View):
                 await interaction.response.defer()
             await self.cog.show_recent_changes(interaction, self.alliance_name, hours=24)
         except Exception as e:
-            print(f"Error in last_day_callback: {e}")
+            logger.error(f"Error in last_day_callback: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
                     "❌ An error occurred while showing recent changes.",
@@ -720,7 +743,7 @@ class HistoryView(discord.ui.View):
             modal = CustomTimeModal(self.cog, self.alliance_name)
             await interaction.response.send_modal(modal)
         except Exception as e:
-            print(f"Error in custom_time_callback: {e}")
+            logger.error(f"Error in custom_time_callback: {e}")
             await interaction.followup.send(
                 "❌ An error occurred while showing the time input.",
                 ephemeral=True
@@ -761,7 +784,7 @@ class MemberListView(discord.ui.View):
                 await interaction.response.defer()
                 await self.cog.show_furnace_history(interaction, fid)
             except Exception as e:
-                print(f"Error in member_callback: {e}")
+                logger.error(f"Error in member_callback: {e}")
                 if not interaction.response.is_done():
                     await interaction.response.send_message(
                         "❌ An error occurred while showing furnace history.",
@@ -845,7 +868,7 @@ class MemberListView(discord.ui.View):
                 await interaction.response.defer()
             await self.cog.show_recent_changes(interaction, self.alliance_name, hours=1)
         except Exception as e:
-            print(f"Error in last_hour_callback: {e}")
+            logger.error(f"Error in last_hour_callback: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
                     "❌ An error occurred while showing recent changes.",
@@ -863,7 +886,7 @@ class MemberListView(discord.ui.View):
                 await interaction.response.defer()
             await self.cog.show_recent_changes(interaction, self.alliance_name, hours=24)
         except Exception as e:
-            print(f"Error in last_day_callback: {e}")
+            logger.error(f"Error in last_day_callback: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
                     "❌ An error occurred while showing recent changes.",
@@ -880,7 +903,7 @@ class MemberListView(discord.ui.View):
             modal = CustomTimeModal(self.cog, self.alliance_name)
             await interaction.response.send_modal(modal)
         except Exception as e:
-            print(f"Error in custom_time_callback: {e}")
+            logger.error(f"Error in custom_time_callback: {e}")
             await interaction.followup.send(
                 "❌ An error occurred while showing the time input.",
                 ephemeral=True
@@ -940,7 +963,7 @@ class FIDSearchModal(discord.ui.Modal, title="Search by FID"):
                 ephemeral=True
             )
         except Exception as e:
-            print(f"Error in FIDSearchModal on_submit: {e}")
+            logger.error(f"Error in FIDSearchModal on_submit: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
                     "❌ An error occurred while searching for the player.",
@@ -987,7 +1010,7 @@ class MemberListViewNickname(discord.ui.View):
                 await interaction.response.defer()
                 await self.cog.show_nickname_history(interaction, fid)
             except Exception as e:
-                print(f"Error in member_callback: {e}")
+                logger.error(f"Error in member_callback: {e}")
                 if not interaction.response.is_done():
                     await interaction.response.send_message(
                         "❌ An error occurred while showing nickname history.",
@@ -1071,7 +1094,7 @@ class MemberListViewNickname(discord.ui.View):
                 await interaction.response.defer()
             await self.cog.show_recent_nickname_changes(interaction, self.alliance_name, hours=1)
         except Exception as e:
-            print(f"Error in last_hour_callback: {e}")
+            logger.error(f"Error in last_hour_callback: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
                     "❌ An error occurred while showing recent changes.",
@@ -1089,7 +1112,7 @@ class MemberListViewNickname(discord.ui.View):
                 await interaction.response.defer()
             await self.cog.show_recent_nickname_changes(interaction, self.alliance_name, hours=24)
         except Exception as e:
-            print(f"Error in last_day_callback: {e}")
+            logger.error(f"Error in last_day_callback: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
                     "❌ An error occurred while showing recent changes.",
@@ -1106,7 +1129,7 @@ class MemberListViewNickname(discord.ui.View):
             modal = CustomTimeModalNickname(self.cog, self.alliance_name)
             await interaction.response.send_modal(modal)
         except Exception as e:
-            print(f"Error in custom_time_callback: {e}")
+            logger.error(f"Error in custom_time_callback: {e}")
             await interaction.followup.send(
                 "❌ An error occurred while showing the time input.",
                 ephemeral=True
@@ -1166,7 +1189,7 @@ class FIDSearchModalNickname(discord.ui.Modal, title="Search by FID"):
                 ephemeral=True
             )
         except Exception as e:
-            print(f"Error in FIDSearchModalNickname on_submit: {e}")
+            logger.error(f"Error in FIDSearchModalNickname on_submit: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
                     "❌ An error occurred while searching for the player.",
@@ -1201,16 +1224,17 @@ class CustomTimeModal(discord.ui.Modal, title="Custom Time Range"):
                     ephemeral=True
                 )
                 return
-            
-            await self.cog.show_recent_nickname_changes(interaction, self.alliance_name, hours)
-                
+
+            await interaction.response.defer()
+            await self.cog.show_recent_changes(interaction, self.alliance_name, hours)
+
         except ValueError:
             await interaction.response.send_message(
                 "❌ Please enter a valid number.",
                 ephemeral=True
             )
         except Exception as e:
-            print(f"Error in CustomTimeModal on_submit: {e}")
+            logger.error(f"Error in CustomTimeModal on_submit: {e}")
             await interaction.response.send_message(
                 "❌ An error occurred while processing your request.",
                 ephemeral=True
@@ -1246,7 +1270,7 @@ class RecentChangesView(discord.ui.View):
             old_level = self.level_mapping.get(int(old_value), str(old_value))
             new_level = self.level_mapping.get(int(new_value), str(new_value))
             embed.add_field(
-                name=f"{self.members[fid]} (FID: {fid})",
+                name=f"{self.members.get(fid, f'Unknown ({fid})')} (FID: {fid})",
                 value=f"```{old_level} ➜ {new_level}\nTime: {timestamp}```",
                 inline=False
             )
@@ -1299,7 +1323,7 @@ class RecentNicknameChangesView(discord.ui.View):
 
         for fid, old_name, new_name, timestamp in self.chunks[self.current_page]:
             embed.add_field(
-                name=f"{self.members[fid]} (FID: {fid})",
+                name=f"{self.members.get(fid, f'Unknown ({fid})')} (FID: {fid})",
                 value=f"```{old_name} ➜ {new_name}\nTime: {timestamp}```",
                 inline=False
             )
@@ -1358,7 +1382,7 @@ class CustomTimeModalNickname(discord.ui.Modal, title="Custom Time Range"):
                 ephemeral=True
             )
         except Exception as e:
-            print(f"Error in CustomTimeModalNickname on_submit: {e}")
+            logger.error(f"Error in CustomTimeModalNickname on_submit: {e}")
             await interaction.response.send_message(
                 "❌ An error occurred while processing your request.",
                 ephemeral=True

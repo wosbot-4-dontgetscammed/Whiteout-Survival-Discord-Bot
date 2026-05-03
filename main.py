@@ -4,6 +4,11 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 import sys
 import os
 import subprocess
+from dotenv import load_dotenv
+load_dotenv()
+
+from cogs.log_config import get_logger
+logger = get_logger("main")
 
 def check_and_install_requirements():
     required_packages = {
@@ -16,38 +21,42 @@ def check_and_install_requirements():
         'pytz': 'pytz',
         'pyzipper': 'pyzipper'
     }
-    
+
     def install_package(package_name):
         try:
-            print(f"Installing {package_name}...")
+            logger.info(f"Installing {package_name}...")
             subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-            print(f"{package_name} installed successfully.")
+            logger.info(f"{package_name} installed successfully.")
             return True
         except subprocess.CalledProcessError:
-            print(f"Error installing {package_name}.")
+            logger.error(f"Error installing {package_name}.")
             return False
 
     packages_to_install = []
     try:
-        import pkg_resources
-        installed_packages = {pkg.key for pkg in pkg_resources.working_set}
-    except ImportError:
-        install_package('setuptools')
-        import pkg_resources
-        installed_packages = {pkg.key for pkg in pkg_resources.working_set}
+        from importlib.metadata import distributions
+        installed_packages = set()
+        for dist in distributions():
+            try:
+                installed_packages.add(dist.metadata['Name'].lower().replace('-', '_'))
+            except Exception:
+                pass
+    except Exception:
+        installed_packages = set()
 
     for package, pip_name in required_packages.items():
-        if package.lower() not in installed_packages:
+        check_name = package.lower().replace('-', '_').replace('.', '_')
+        if check_name not in installed_packages and package.lower() not in installed_packages:
             packages_to_install.append(pip_name)
 
     if packages_to_install:
-        print("Missing libraries detected. Starting installation...")
+        logger.info("Missing libraries detected. Starting installation...")
         for package in packages_to_install:
             success = install_package(package)
             if not success:
-                print(f"Some libraries could not be installed. Please run pip install {package} manually.")
+                logger.error(f"Some libraries could not be installed. Please run pip install {package} manually.")
                 sys.exit(1)
-        print("All required libraries installed!")
+        logger.info("All required libraries installed!")
         return True
     return False
 
@@ -57,15 +66,13 @@ if __name__ == "__main__":
     import discord
     from discord.ext import commands
     import sqlite3
-    from colorama import Fore, Style, init
     import requests
     import asyncio
-    import pkg_resources
 
     VERSION_URL = "https://raw.githubusercontent.com/Reloisback/Whiteout-Survival-Discord-Bot/refs/heads/main/autoupdateinfo.txt"
 
     def restart_bot():
-        print(Fore.YELLOW + "\nRestarting bot..." + Style.RESET_ALL)
+        logger.warning("Restarting bot...")
         python = sys.executable
         os.execl(python, python, *sys.argv)
 
@@ -79,33 +86,23 @@ if __name__ == "__main__":
                     is_main INTEGER DEFAULT 0
                 )''')
                 conn.commit()
-                print(Fore.GREEN + "Version table created successfully." + Style.RESET_ALL)
+                logger.info("Version table created successfully.")
         except Exception as e:
-            print(Fore.RED + f"Error creating version table: {e}" + Style.RESET_ALL)
+            logger.error(f"Error creating version table: {e}")
 
     async def check_and_update_files():
         try:
-            try:
-                response = requests.get(VERSION_URL)
-                if response.status_code == 200:
-                    source_url = "https://raw.githubusercontent.com/Reloisback/Whiteout-Survival-Discord-Bot/refs/heads/main"
-                    print(Fore.GREEN + "Connected to GitHub successfully." + Style.RESET_ALL)
-                else:
-                    raise requests.RequestException
-            except requests.RequestException:
-                print(Fore.YELLOW + "Cannot connect to GitHub, trying alternative source (wosland.com)..." + Style.RESET_ALL)
-                alt_version_url = "https://wosland.com/wosdc/autoupdateinfo.txt"
-                response = requests.get(alt_version_url)
-                if response.status_code == 200:
-                    source_url = "https://wosland.com/wosdc"
-                    print(Fore.GREEN + "Connected to wosland.com successfully." + Style.RESET_ALL)
-                else:
-                    print(Fore.RED + "Failed to connect to both GitHub and wosland.com" + Style.RESET_ALL)
-                    return False
+            response = await asyncio.to_thread(requests.get, VERSION_URL, timeout=15)
+            if response.status_code == 200:
+                source_url = "https://raw.githubusercontent.com/Reloisback/Whiteout-Survival-Discord-Bot/refs/heads/main"
+                logger.info("Connected to GitHub successfully.")
+            else:
+                logger.error(f"Failed to connect to GitHub (HTTP {response.status_code})")
+                return False
 
             if not os.path.exists('cogs'):
                 os.makedirs('cogs')
-                print(Fore.GREEN + "cogs folder created" + Style.RESET_ALL)
+                logger.info("cogs folder created")
 
             content = response.text.split('\n')
             documents = {}
@@ -119,7 +116,7 @@ if __name__ == "__main__":
                 elif doc_section and line.startswith("Updated Info;"):
                     break
                 elif doc_section and '=' in line:
-                    file_name, version = [x.strip() for x in line.split('=')]
+                    file_name, version = [x.strip() for x in line.split('=', 1)]
                     documents[file_name] = version
 
             update_notes = []
@@ -149,33 +146,44 @@ if __name__ == "__main__":
                             main_py_updated = True
 
                 if updates_needed:
-                    print(Fore.YELLOW + "\nUpdates available!" + Style.RESET_ALL)
-                    print(Fore.YELLOW + "\nIf this is your first installation and you see File and No version, please update!" + Style.RESET_ALL)
-                    print("\nFiles to update:")
+                    logger.warning("Updates available!")
+                    logger.warning("If this is your first installation and you see File and No version, please update!")
+                    logger.info("Files to update:")
                     for file_name, new_version in updates_needed:
                         cursor.execute("SELECT version FROM versions WHERE file_name = ?", (file_name,))
                         current = cursor.fetchone()
                         current_version = current[0] if current else "File and No Version"
-                        print(f"• {file_name}: {current_version} -> {new_version}")
+                        logger.info(f"• {file_name}: {current_version} -> {new_version}")
 
-                    print("\nUpdate Notes:")
+                    logger.info("Update Notes:")
                     for note in update_notes:
-                        print(f"• {note}")
+                        logger.info(f"• {note}")
 
                     if main_py_updated:
-                        print(Fore.YELLOW + "\nNOTE: This update includes changes to main.py. Bot will restart after update." + Style.RESET_ALL)
+                        logger.warning("NOTE: This update includes changes to main.py. Bot will restart after update.")
 
-                    response = input("\nDo you want to update now? (y/n): ").lower()
+                    auto_update_env = os.getenv('AUTO_UPDATE')
+                    if auto_update_env is not None:
+                        auto_update = auto_update_env.lower() == 'true'
+                        response = 'y' if auto_update else 'n'
+                        logger.info(f"AUTO_UPDATE={'true' if auto_update else 'false'}, {'proceeding' if auto_update else 'skipping'}.")
+                    elif sys.stdin.isatty():
+                        response = input("\nDo you want to update now? (y/n): ").lower()
+                    else:
+                        logger.warning("Non-interactive mode, skipping update prompt. Set AUTO_UPDATE=true to auto-update.")
+                        response = 'n'
                     if response == 'y':
                         needs_restart = False
                         
                         for file_name, new_version in updates_needed:
                             if file_name.strip() != 'main.py':
                                 file_url = f"{source_url}/{file_name}"
-                                file_response = requests.get(file_url)
+                                file_response = await asyncio.to_thread(requests.get, file_url, timeout=15)
                                 
                                 if file_response.status_code == 200:
-                                    os.makedirs(os.path.dirname(file_name), exist_ok=True)
+                                    dirname = os.path.dirname(file_name)
+                                    if dirname:
+                                        os.makedirs(dirname, exist_ok=True)
                                     content = file_response.text.rstrip('\n')
                                     with open(file_name, 'w', encoding='utf-8', newline='') as f:
                                         f.write(content)
@@ -187,7 +195,7 @@ if __name__ == "__main__":
 
                         if main_py_updated:
                             main_file_url = f"{source_url}/main.py"
-                            main_response = requests.get(main_file_url)
+                            main_response = await asyncio.to_thread(requests.get, main_file_url, timeout=15)
                             
                             if main_response.status_code == 200:
                                 content = main_response.text.rstrip('\n')
@@ -202,22 +210,22 @@ if __name__ == "__main__":
                                 needs_restart = True
 
                         conn.commit()
-                        print(Fore.GREEN + "\nAll updates completed successfully!" + Style.RESET_ALL)
+                        logger.info("All updates completed successfully!")
 
                         if needs_restart:
                             if os.path.exists('main.py.bak'):
                                 os.remove('main.py.bak')
                             os.rename('main.py', 'main.py.bak')
                             os.rename('main.py.new', 'main.py')
-                            print(Fore.YELLOW + "\nRestarting bot to apply main.py updates..." + Style.RESET_ALL)
+                            logger.warning("Restarting bot to apply main.py updates...")
                             restart_bot()
                     else:
-                        print(Fore.YELLOW + "\nUpdate skipped. Running with existing files." + Style.RESET_ALL)
+                        logger.warning("Update skipped. Running with existing files.")
 
             return False
 
         except Exception as e:
-            print(Fore.RED + f"Error during version check: {e}" + Style.RESET_ALL)
+            logger.error(f"Error during version check: {e}")
             return False
 
     class CustomBot(commands.Bot):
@@ -239,133 +247,138 @@ if __name__ == "__main__":
 
     bot = CustomBot(command_prefix='/', intents=intents)
 
-    init(autoreset=True)
+    bot_token = os.getenv('BOT_TOKEN')
+    if not bot_token:
+        token_file = 'bot_token.txt'
+        if os.path.exists(token_file):
+            with open(token_file, 'r') as f:
+                bot_token = f.read().strip()
+        else:
+            bot_token = input("Enter the bot token: ")
+    if not bot_token:
+        logger.error("No bot token found. Set BOT_TOKEN in .env or provide bot_token.txt")
+        sys.exit(1)
 
-    token_file = 'bot_token.txt'
-    if not os.path.exists(token_file):
-        bot_token = input("Enter the bot token: ")
-        with open(token_file, 'w') as f:
-            f.write(bot_token)
-    else:
-        with open(token_file, 'r') as f:
-            bot_token = f.read().strip()
+    from cogs.database import DatabaseManager
+    from cogs.config import validate_config
+    db = DatabaseManager.instance()
 
-    if not os.path.exists('db'):
-        os.makedirs('db')
-        print(Fore.GREEN + "db folder created" + Style.RESET_ALL)
-
-    databases = {
-        "conn_alliance": "db/alliance.sqlite",
-        "conn_giftcode": "db/giftcode.sqlite",
-        "conn_changes": "db/changes.sqlite",
-        "conn_users": "db/users.sqlite",
-        "conn_settings": "db/settings.sqlite",
-    }
-
-    connections = {name: sqlite3.connect(path) for name, path in databases.items()}
-
-    print(Fore.GREEN + "Database connections have been successfully established." + Style.RESET_ALL)
+    validate_config()
+    logger.info("Database connections have been successfully established.")
 
     def create_tables():
-        with connections["conn_changes"] as conn_changes:
-            conn_changes.execute('''CREATE TABLE IF NOT EXISTS nickname_changes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                fid INTEGER, 
-                old_nickname TEXT, 
-                new_nickname TEXT, 
-                change_date TEXT
-            )''')
-            conn_changes.execute('''CREATE TABLE IF NOT EXISTS furnace_changes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                fid INTEGER, 
-                old_furnace_lv INTEGER, 
-                new_furnace_lv INTEGER, 
-                change_date TEXT
-            )''')
+        db.get("changes").execute('''CREATE TABLE IF NOT EXISTS nickname_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fid INTEGER,
+            old_nickname TEXT,
+            new_nickname TEXT,
+            change_date TEXT
+        )''')
+        db.get("changes").execute('''CREATE TABLE IF NOT EXISTS furnace_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fid INTEGER,
+            old_furnace_lv INTEGER,
+            new_furnace_lv INTEGER,
+            change_date TEXT
+        )''')
+        db.get("changes").commit()
 
-        with connections["conn_settings"] as conn_settings:
-            conn_settings.execute('''CREATE TABLE IF NOT EXISTS botsettings (
-                id INTEGER PRIMARY KEY, 
-                channelid INTEGER, 
-                giftcodestatus TEXT 
-            )''')
-            conn_settings.execute('''CREATE TABLE IF NOT EXISTS admin (
-                id INTEGER PRIMARY KEY, 
-                is_initial INTEGER
-            )''')
+        db.get("settings").execute('''CREATE TABLE IF NOT EXISTS botsettings (
+            id INTEGER PRIMARY KEY,
+            channelid INTEGER,
+            giftcodestatus TEXT
+        )''')
+        db.get("settings").execute('''CREATE TABLE IF NOT EXISTS admin (
+            id INTEGER PRIMARY KEY,
+            is_initial INTEGER
+        )''')
+        db.get("settings").commit()
 
-        with connections["conn_users"] as conn_users:
-            conn_users.execute('''CREATE TABLE IF NOT EXISTS users (
-                fid INTEGER PRIMARY KEY, 
-                nickname TEXT, 
-                furnace_lv INTEGER DEFAULT 0, 
-                kid INTEGER, 
-                stove_lv_content TEXT, 
-                alliance TEXT
-            )''')
+        db.get("users").execute('''CREATE TABLE IF NOT EXISTS users (
+            fid INTEGER PRIMARY KEY,
+            nickname TEXT,
+            furnace_lv INTEGER DEFAULT 0,
+            kid INTEGER,
+            stove_lv_content TEXT,
+            alliance TEXT
+        )''')
+        db.get("users").commit()
 
-        with connections["conn_giftcode"] as conn_giftcode:
-            conn_giftcode.execute('''CREATE TABLE IF NOT EXISTS gift_codes (
-                giftcode TEXT PRIMARY KEY, 
-                date TEXT
-            )''')
-            conn_giftcode.execute('''CREATE TABLE IF NOT EXISTS user_giftcodes (
-                fid INTEGER, 
-                giftcode TEXT, 
-                status TEXT, 
-                PRIMARY KEY (fid, giftcode),
-                FOREIGN KEY (giftcode) REFERENCES gift_codes (giftcode)
-            )''')
+        db.get("giftcode").execute('''CREATE TABLE IF NOT EXISTS gift_codes (
+            giftcode TEXT PRIMARY KEY,
+            date TEXT
+        )''')
+        db.get("giftcode").execute('''CREATE TABLE IF NOT EXISTS user_giftcodes (
+            fid INTEGER,
+            giftcode TEXT,
+            status TEXT,
+            PRIMARY KEY (fid, giftcode),
+            FOREIGN KEY (giftcode) REFERENCES gift_codes (giftcode)
+        )''')
+        db.get("giftcode").commit()
 
-        with connections["conn_alliance"] as conn_alliance:
-            conn_alliance.execute('''CREATE TABLE IF NOT EXISTS alliancesettings (
-                alliance_id INTEGER PRIMARY KEY, 
-                channel_id INTEGER, 
-                interval INTEGER
-            )''')
-            conn_alliance.execute('''CREATE TABLE IF NOT EXISTS alliance_list (
-                alliance_id INTEGER PRIMARY KEY, 
-                name TEXT
-            )''')
+        db.get("alliance").execute('''CREATE TABLE IF NOT EXISTS alliancesettings (
+            alliance_id INTEGER PRIMARY KEY,
+            channel_id INTEGER,
+            interval INTEGER
+        )''')
+        db.get("alliance").execute('''CREATE TABLE IF NOT EXISTS alliance_list (
+            alliance_id INTEGER PRIMARY KEY,
+            name TEXT
+        )''')
+        db.get("alliance").commit()
 
-        print(Fore.GREEN + "All tables checked." + Style.RESET_ALL)
+        logger.info("All tables checked.")
 
     create_tables()
-    setup_version_table()  
+    setup_version_table()
 
     async def load_cogs():
-        await bot.load_extension("cogs.olddb")
-        await bot.load_extension("cogs.control")
-        await bot.load_extension("cogs.alliance")
-        await bot.load_extension("cogs.alliance_member_operations")
-        await bot.load_extension("cogs.bot_operations")
-        await bot.load_extension("cogs.logsystem")
-        await bot.load_extension("cogs.support_operations")
-        await bot.load_extension("cogs.gift_operations")
-        await bot.load_extension("cogs.changes")
-        await bot.load_extension("cogs.w")
-        await bot.load_extension("cogs.wel")
-        await bot.load_extension("cogs.other_features")
-        await bot.load_extension("cogs.bear_trap")
-        await bot.load_extension("cogs.id_channel")
-        await bot.load_extension("cogs.backup_operations")
-        await bot.load_extension("cogs.bear_trap_editor")
+        extensions = [
+            "cogs.control",
+            "cogs.alliance",
+            "cogs.alliance_member_operations",
+            "cogs.bot_operations",
+            "cogs.logsystem",
+            "cogs.support_operations",
+            "cogs.gift_operations",
+            "cogs.changes",
+            "cogs.w",
+            "cogs.wel",
+            "cogs.other_features",
+            "cogs.bear_trap",
+            "cogs.id_channel",
+            "cogs.backup_operations",
+            "cogs.bear_trap_editor",
+            "cogs.gift_scraper",
+        ]
+        for ext in extensions:
+            try:
+                logger.info("Loading %s...", ext)
+                await bot.load_extension(ext)
+                logger.info("Loaded %s", ext)
+            except Exception as e:
+                logger.error("Failed to load %s: %s", ext, e)
 
     @bot.event
     async def on_ready():
         try:
-            print(f"{Fore.GREEN}Logged in as {Fore.CYAN}{bot.user}{Style.RESET_ALL}")
+            logger.info(f"Logged in as {bot.user}")
             synced = await bot.tree.sync()
         except Exception as e:
-            print(f"Error syncing commands: {e}")
+            logger.error(f"Error syncing commands: {e}")
 
     async def main():
         if check_and_install_requirements():
-            print(f"{Fore.GREEN}Library installations completed, starting bot...{Style.RESET_ALL}")
-        
+            logger.info("Library installations completed, starting bot...")
+
         await check_and_update_files()
         await load_cogs()
-        await bot.start(bot_token)
+        try:
+            await bot.start(bot_token)
+        finally:
+            db.close_all()
+            logger.info("Database connections closed.")
 
     if __name__ == "__main__":
         asyncio.run(main())

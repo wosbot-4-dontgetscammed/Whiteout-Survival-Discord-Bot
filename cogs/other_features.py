@@ -1,6 +1,8 @@
 import discord
 from discord.ext import commands
-import sqlite3
+from .log_config import get_logger
+
+logger = get_logger("other_features")
 
 class OtherFeatures(commands.Cog):
     def __init__(self, bot):
@@ -34,13 +36,13 @@ class OtherFeatures(commands.Cog):
             
             view = OtherFeaturesView(self)
             
-            try:
+            if not interaction.response.is_done():
                 await interaction.response.edit_message(embed=embed, view=view)
-            except discord.InteractionResponded:
-                pass
+            else:
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
                 
         except Exception as e:
-            print(f"Error in show_other_features_menu: {e}")
+            logger.error("Error in show_other_features_menu: %s", e)
             if not interaction.response.is_done():
                 await interaction.response.send_message(
                     "❌ An error occurred. Please try again.",
@@ -49,8 +51,16 @@ class OtherFeatures(commands.Cog):
 
 class OtherFeaturesView(discord.ui.View):
     def __init__(self, cog):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
         self.cog = cog
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        try:
+            await self.message.edit(view=self)
+        except Exception as e:
+            logger.debug("Failed to edit message on timeout: %s", e)
 
     @discord.ui.button(
         label="Bear Trap",
@@ -70,11 +80,17 @@ class OtherFeaturesView(discord.ui.View):
                     ephemeral=True
                 )
         except Exception as e:
-            print(f"Error loading Bear Trap menu: {e}")
-            await interaction.response.send_message(
-                "❌ An error occurred while loading Bear Trap menu.",
-                ephemeral=True
-            )
+            logger.error("Error loading Bear Trap menu: %s", e)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ An error occurred while loading Bear Trap menu.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    "❌ An error occurred while loading Bear Trap menu.",
+                    ephemeral=True
+                )
 
     @discord.ui.button(
         label="ID Channel",
@@ -94,11 +110,17 @@ class OtherFeaturesView(discord.ui.View):
                     ephemeral=True
                 )
         except Exception as e:
-            print(f"Error loading ID Channel menu: {e}")
-            await interaction.response.send_message(
-                "❌ An error occurred while loading ID Channel menu.",
-                ephemeral=True
-            )
+            logger.error("Error loading ID Channel menu: %s", e)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ An error occurred while loading ID Channel menu.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    "❌ An error occurred while loading ID Channel menu.",
+                    ephemeral=True
+                )
 
     @discord.ui.button(
         label="Backup System",
@@ -118,17 +140,23 @@ class OtherFeaturesView(discord.ui.View):
                     ephemeral=True
                 )
         except Exception as e:
-            print(f"Error loading Backup System menu: {e}")
-            await interaction.response.send_message(
-                "❌ An error occurred while loading Backup System menu.",
-                ephemeral=True
-            )
+            logger.error("Error loading Backup System menu: %s", e)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ An error occurred while loading Backup System menu.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    "❌ An error occurred while loading Backup System menu.",
+                    ephemeral=True
+                )
 
     @discord.ui.button(
         label="Main Menu",
         emoji="🏠",
         style=discord.ButtonStyle.secondary,
-        custom_id="main_menu",
+        custom_id="other_main_menu",
         row=2
     )
     async def main_menu_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -137,11 +165,17 @@ class OtherFeaturesView(discord.ui.View):
             if alliance_cog:
                 await alliance_cog.show_main_menu(interaction)
         except Exception as e:
-            print(f"Error returning to main menu: {e}")
-            await interaction.response.send_message(
-                "❌ An error occurred while returning to main menu.",
-                ephemeral=True
-            )
+            logger.error("Error returning to main menu: %s", e)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ An error occurred while returning to main menu.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    "❌ An error occurred while returning to main menu.",
+                    ephemeral=True
+                )
 
 async def setup(bot):
     await bot.add_cog(OtherFeatures(bot)) 

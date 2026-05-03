@@ -3,6 +3,9 @@ from discord.ext import commands
 from discord import app_commands, ui
 import sqlite3
 import os
+from .log_config import get_logger
+
+logger = get_logger("olddb")
 
 class AllianceSelect(ui.Select):
     def __init__(self, alliances):
@@ -122,6 +125,9 @@ class DatabaseTransfer(commands.Cog):
                 elif table == "user_giftcodes":
                     destination_cursor.executemany("INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status) VALUES (?, ?, ?)", rows)
                 elif table == "users":
+                    # V3 source schema: (fid[0], nickname[1], furnace_lv[2], alliance[3], kid[4], stove_lv_content[5])
+                    # Destination schema: (fid, nickname, furnace_lv, kid, stove_lv_content, alliance)
+                    # Reorder columns: 0,1,2 -> fid,nickname,furnace_lv; 4->kid; 5->stove_lv_content; 3->alliance
                     reorganized_rows = []
                     for row in rows:
                         reorganized_row = (row[0], row[1], row[2], row[4], row[5], row[3])
@@ -177,6 +183,7 @@ class DatabaseTransfer(commands.Cog):
                 row_count = len(rows)
 
                 if table == "users":
+                    # V2 source schema: (fid, nickname, furnace_lv) - only 3 columns
                     for row in rows:
                         fid, nickname, furnace_lv = row
                         destination_cursor.execute(
@@ -236,4 +243,4 @@ class DatabaseTransfer(commands.Cog):
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 async def setup(bot):
-    await bot.add_cog(DatabaseTransfer(bot))
+    await bot.add_cog(DatabaseTransfer(bot))

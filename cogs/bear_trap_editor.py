@@ -5,7 +5,9 @@ import base64
 from datetime import datetime
 import pytz
 import urllib.parse
-import traceback
+from .log_config import get_logger
+
+logger = get_logger("bear_trap_editor")
 
 class CodeInputModal(discord.ui.Modal):
     def __init__(self, editor_cog, notification_id):
@@ -109,12 +111,12 @@ class CodeInputModal(discord.ui.Modal):
             if self.notification_id:
                 bear_trap = self.editor_cog.bot.get_cog('BearTrap')
                 if bear_trap:
-                    bear_trap.cursor.execute("""
+                    cursor = bear_trap.conn.execute("""
                         SELECT channel_id, mention_type
-                        FROM bear_notifications 
+                        FROM bear_notifications
                         WHERE id = ?
                     """, (self.notification_id,))
-                    result = bear_trap.cursor.fetchone()
+                    result = cursor.fetchone()
                     if result:
                         channel_id, mention_type = result
                         channel = interaction.guild.get_channel(channel_id)
@@ -137,7 +139,7 @@ class CodeInputModal(discord.ui.Modal):
             )
 
         except Exception as e:
-            print(f"Error processing code: {e}")
+            logger.error("Error processing code: %s", e)
             await interaction.response.send_message(
                 "❌ Error processing code!",
                 ephemeral=True
@@ -173,14 +175,30 @@ class NotificationEditView(discord.ui.View):
                 )
                 return
 
-            bear_trap.cursor.execute("""
-                SELECT n.*, e.* 
-                FROM bear_notifications n 
-                LEFT JOIN bear_notification_embeds e ON n.id = e.notification_id 
+            cursor = bear_trap.conn.execute("""
+                SELECT
+                    n.hour AS n_hour,
+                    n.minute AS n_minute,
+                    n.timezone AS n_timezone,
+                    n.description AS n_description,
+                    n.notification_type AS n_notification_type,
+                    n.repeat_enabled AS n_repeat_enabled,
+                    n.repeat_minutes AS n_repeat_minutes,
+                    n.next_notification AS n_next_notification,
+                    e.title AS e_title,
+                    e.description AS e_description,
+                    e.color AS e_color,
+                    e.image_url AS e_image_url,
+                    e.thumbnail_url AS e_thumbnail_url,
+                    e.footer AS e_footer,
+                    e.author AS e_author,
+                    e.mention_message AS e_mention_message
+                FROM bear_notifications n
+                LEFT JOIN bear_notification_embeds e ON n.id = e.notification_id
                 WHERE n.id = ? AND n.guild_id = ?
             """, (self.notification_id, interaction.guild_id))
-            
-            result = bear_trap.cursor.fetchone()
+
+            result = cursor.fetchone()
             if not result:
                 await interaction.response.send_message(
                     "❌ Notification not found!",
@@ -188,26 +206,28 @@ class NotificationEditView(discord.ui.View):
                 )
                 return
 
-            notification_columns = 16
+            # Map column names from cursor.description for robust access
+            col_names = [desc[0] for desc in cursor.description]
+            row = dict(zip(col_names, result))
 
             embed_data = {
-                'title': result[18] if result[18] else "Bear Trap Notification",
-                'description': result[19] if result[19] else "Get ready for Bear! Only %t remaining.",
-                'color': result[20] if result[20] else 3447003,
-                'image_url': result[21] if result[21] else None,
-                'thumbnail_url': result[22] if result[22] else None,
-                'footer': result[23] if result[23] else "Bear Trap Notification System",
-                'author': result[24] if result[24] else None,
-                'mention_message': result[25] if result[25] else "30 minutes @tag sa as",
+                'title': row['e_title'] if row['e_title'] else "Bear Trap Notification",
+                'description': row['e_description'] if row['e_description'] else "Get ready for Bear! Only %t remaining.",
+                'color': row['e_color'] if row['e_color'] else 3447003,
+                'image_url': row['e_image_url'] if row['e_image_url'] else None,
+                'thumbnail_url': row['e_thumbnail_url'] if row['e_thumbnail_url'] else None,
+                'footer': row['e_footer'] if row['e_footer'] else "Bear Trap Notification System",
+                'author': row['e_author'] if row['e_author'] else None,
+                'mention_message': row['e_mention_message'] if row['e_mention_message'] else "30 minutes @tag sa as",
                 'notification': {
-                    'date': result[15].strftime('%Y-%m-%d') if isinstance(result[15], datetime) else datetime.fromisoformat(str(result[15])).strftime('%Y-%m-%d'),
-                    'hour': result[3],
-                    'minute': result[4],
-                    'timezone': result[5],
-                    'type': result[7],
-                    'repeat_enabled': bool(result[9]),
-                    'repeat_minutes': result[10],
-                    'custom_times': result[6].split('|')[0].replace('CUSTOM_TIMES:', '') if result[6].startswith('CUSTOM_TIMES:') else None
+                    'date': (row['n_next_notification'].strftime('%Y-%m-%d') if isinstance(row['n_next_notification'], datetime) else datetime.fromisoformat(str(row['n_next_notification'])).strftime('%Y-%m-%d')) if row['n_next_notification'] is not None else datetime.now().strftime('%Y-%m-%d'),
+                    'hour': row['n_hour'],
+                    'minute': row['n_minute'],
+                    'timezone': row['n_timezone'],
+                    'type': row['n_notification_type'],
+                    'repeat_enabled': bool(row['n_repeat_enabled']),
+                    'repeat_minutes': row['n_repeat_minutes'],
+                    'custom_times': row['n_description'].split('|')[0].replace('CUSTOM_TIMES:', '') if row['n_description'].startswith('CUSTOM_TIMES:') else None
                 }
             }
 
@@ -221,7 +241,7 @@ class NotificationEditView(discord.ui.View):
 
             json_str = json.dumps(embed_data)
             encoded_data = urllib.parse.quote(json_str)
-            edit_url = f"https://wosland.com/notification/notification.php?data={encoded_data}"
+            edit_url = f"https://glitchii.github.io/embedbuilder/?data={encoded_data}"
             
             embed = discord.Embed(
                 title="🔄 Notification Edit",
@@ -236,7 +256,7 @@ class NotificationEditView(discord.ui.View):
             await interaction.response.edit_message(embed=embed, view=self)
             
         except Exception as e:
-            print(f"Error generating edit URL: {e}")
+            logger.error("Error generating edit URL: %s", e)
             await interaction.response.send_message(
                 "❌ Error generating edit URL!",
                 ephemeral=True
@@ -269,7 +289,6 @@ class ChannelMentionSelectView(discord.ui.View):
             placeholder="Select channel...",
             channel_types=[
                 discord.ChannelType.text,
-                discord.ChannelType.private,
                 discord.ChannelType.news,
                 discord.ChannelType.forum,
                 discord.ChannelType.news_thread,
@@ -460,7 +479,7 @@ class MentionTypeView(discord.ui.View):
                 await interaction.response.edit_message(embed=embed, view=None)
 
         except Exception as e:
-            print(f"Error saving/updating notification: {e}")
+            logger.error("Error saving/updating notification: %s", e)
             embed = discord.Embed(
                 title="❌ Error",
                 description="Error processing request!",
@@ -496,7 +515,7 @@ class BearTrapEditor(commands.Cog):
 
             json_str = json.dumps(embed_data)
             encoded_data = urllib.parse.quote(json_str)
-            self.edit_url = f"https://wosland.com/notification/notification.php?data={encoded_data}"
+            self.edit_url = f"https://glitchii.github.io/embedbuilder/?data={encoded_data}"
             
             paste_button = discord.ui.Button(
                 label="Paste Embed",
@@ -509,7 +528,7 @@ class BearTrapEditor(commands.Cog):
                     modal = CodeInputModal(self.cog, None)
                     await button_interaction.response.send_modal(modal)
                 except Exception as modal_error:
-                    print(f"[ERROR] Failed to show modal: {modal_error}")
+                    logger.error("Failed to show modal: %s", modal_error)
                     await button_interaction.followup.send(
                         "❌ Error showing modal!",
                         ephemeral=True
@@ -533,8 +552,7 @@ class BearTrapEditor(commands.Cog):
                 await interaction.response.edit_message(embed=embed, view=self)
 
             except Exception as e:
-                error_msg = f"[ERROR] Error in web setup: {str(e)}\nType: {type(e)}\nTrace: {traceback.format_exc()}"
-                print(error_msg)
+                logger.exception("Error in web setup")
                 
                 try:
                     if not interaction.response.is_done():
@@ -548,14 +566,14 @@ class BearTrapEditor(commands.Cog):
                             ephemeral=True
                         )
                 except Exception as notify_error:
-                    print(f"[ERROR] Failed to notify user about error: {notify_error}")
+                    logger.error("Failed to notify user about error: %s", notify_error)
 
     def decode_embed_data(self, code):
         try:
             data = json.loads(code)
             return data
         except Exception as e:
-            print(f"Error decoding embed data: {e}")
+            logger.error("Error decoding embed data: %s", e)
             return None
 
     async def update_notification(self, notification_id, embed_data, channel_id=None, mention_type=None, skip_channel_mention=False):
@@ -564,16 +582,17 @@ class BearTrapEditor(commands.Cog):
             if not bear_trap:
                 return False, "Bear Trap module not found!"
 
-            bear_trap.cursor.execute("SELECT * FROM bear_notifications WHERE id = ?", (notification_id,))
-            notification = bear_trap.cursor.fetchone()
+            cursor = bear_trap.conn.execute("SELECT * FROM bear_notifications WHERE id = ?", (notification_id,))
+            notification = cursor.fetchone()
             if not notification:
                 return False, "Notification not found!"
 
             tz = pytz.timezone(embed_data['notification']['timezone'])
-            next_notification = datetime.strptime(
+            naive_dt = datetime.strptime(
                 f"{embed_data['notification']['date']} {embed_data['notification']['hour']:02d}:{embed_data['notification']['minute']:02d}",
                 "%Y-%m-%d %H:%M"
-            ).replace(tzinfo=tz)
+            )
+            next_notification = tz.localize(naive_dt)
 
             description = notification[6]
             if embed_data['notification']['type'] == 6 and embed_data['notification']['custom_times']:
@@ -582,12 +601,13 @@ class BearTrapEditor(commands.Cog):
                 description = "EMBED_MESSAGE:true"
 
             if skip_channel_mention:
-                update_fields = """
-                    hour = ?, minute = ?, timezone = ?, description = ?,
-                    notification_type = ?, repeat_enabled = ?, repeat_minutes = ?,
-                    next_notification = ?
-                """
-                params = (
+                bear_trap.conn.execute("""
+                    UPDATE bear_notifications SET
+                        hour = ?, minute = ?, timezone = ?, description = ?,
+                        notification_type = ?, repeat_enabled = ?, repeat_minutes = ?,
+                        next_notification = ?
+                    WHERE id = ?
+                """, (
                     embed_data['notification']['hour'],
                     embed_data['notification']['minute'],
                     embed_data['notification']['timezone'],
@@ -597,14 +617,15 @@ class BearTrapEditor(commands.Cog):
                     embed_data['notification']['repeat_minutes'],
                     next_notification.isoformat(),
                     notification_id
-                )
+                ))
             else:
-                update_fields = """
-                    hour = ?, minute = ?, timezone = ?, description = ?,
-                    notification_type = ?, repeat_enabled = ?, repeat_minutes = ?,
-                    next_notification = ?, channel_id = ?, mention_type = ?
-                """
-                params = (
+                bear_trap.conn.execute("""
+                    UPDATE bear_notifications SET
+                        hour = ?, minute = ?, timezone = ?, description = ?,
+                        notification_type = ?, repeat_enabled = ?, repeat_minutes = ?,
+                        next_notification = ?, channel_id = ?, mention_type = ?
+                    WHERE id = ?
+                """, (
                     embed_data['notification']['hour'],
                     embed_data['notification']['minute'],
                     embed_data['notification']['timezone'],
@@ -616,11 +637,9 @@ class BearTrapEditor(commands.Cog):
                     channel_id if channel_id is not None else notification[2],
                     mention_type if mention_type is not None else notification[8],
                     notification_id
-                )
+                ))
 
-            bear_trap.cursor.execute(f"UPDATE bear_notifications SET {update_fields} WHERE id = ?", params)
-
-            bear_trap.cursor.execute("""
+            bear_trap.conn.execute("""
                 INSERT OR REPLACE INTO bear_notification_embeds (
                     id,
                     notification_id,
@@ -653,7 +672,7 @@ class BearTrapEditor(commands.Cog):
             return True, "Notification updated successfully!"
 
         except Exception as e:
-            print(f"Error updating notification: {e}")
+            logger.error("Error updating notification: %s", e)
             return False, f"Error processing notification: {str(e)}"
 
     async def start_edit_process(self, interaction: discord.Interaction, notification_id: int):

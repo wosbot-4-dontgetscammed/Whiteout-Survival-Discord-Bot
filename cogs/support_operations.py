@@ -1,6 +1,10 @@
 import discord
 from discord.ext import commands
 
+from .log_config import get_logger
+
+logger = get_logger("support_operations")
+
 class SupportOperations(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -60,7 +64,7 @@ class SupportOperations(commands.Cog):
                     ephemeral=True
                 )
         except Exception as e:
-            print(f"Error sending support info: {e}")
+            logger.error("Error sending support info: %s", e)
 
 class SupportView(discord.ui.View):
     def __init__(self, cog):
@@ -135,23 +139,20 @@ class SupportView(discord.ui.View):
                     ephemeral=True
                 )
         except Exception as e:
-            print(f"Error sending developer info: {e}")
+            logger.error("Error sending developer info: %s", e)
 
     @discord.ui.button(
         label="Main Menu",
         emoji="🏠",
         style=discord.ButtonStyle.secondary,
-        custom_id="main_menu"
+        custom_id="support_main_menu"
     )
     async def main_menu_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         alliance_cog = self.cog.bot.get_cog("Alliance")
-        if alliance_cog:
-            try:
-                await interaction.message.edit(content=None, embed=None, view=None)
-                await alliance_cog.show_main_menu(interaction)
-            except discord.errors.InteractionResponded:
-                await interaction.message.edit(content=None, embed=None, view=None)
-                await alliance_cog.show_main_menu(interaction)
+        if alliance_cog is None:
+            await interaction.response.send_message("❌ Alliance module not loaded.", ephemeral=True)
+            return
+        await alliance_cog.show_main_menu(interaction)
 
 async def setup(bot):
     await bot.add_cog(SupportOperations(bot)) 

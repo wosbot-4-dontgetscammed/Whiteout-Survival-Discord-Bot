@@ -1,9 +1,7 @@
 import discord
 from discord.ext import commands, tasks
-import sqlite3
 import os
 import zipfile
-import datetime
 import aiohttp
 import json
 from datetime import datetime, timedelta
@@ -11,25 +9,38 @@ import asyncio
 import tempfile
 import shutil
 import pyzipper
-import traceback
 import ssl
+from .database import DatabaseManager
+from .log_config import get_logger
+from .utils import check_global_admin, get_global_admin_ids, send_success
+
+logger = get_logger("backup_operations")
 
 class BackupOperations(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = "db/backup.sqlite"
-        self.api_url = "https://wosland.com/apidc/backup_api/backup_api.php"
-        self.api_key = "serioyun_backup_api_key_2024"
-        self.log_path = "log/backuplog.txt"
+        self.db = DatabaseManager.instance()
+        # NOTE: wosland.com backup API is defunct (site permanently down since 2026-03)
+        # Backup upload/list features are disabled until a replacement is configured
+        self.api_url = os.getenv("BACKUP_API_URL", "")
+        self.api_key = os.getenv("BACKUP_API_KEY", "")
+        self._ssl_context = ssl.create_default_context()
+        self._ssl_context.check_hostname = False
+        self._ssl_context.verify_mode = ssl.CERT_NONE
+        self._connector: aiohttp.TCPConnector | None = None
         os.makedirs("log", exist_ok=True)
         self.setup_database()
         self.automatic_backup_loop.start()
 
+    def _get_connector(self) -> aiohttp.TCPConnector:
+        if self._connector is None or self._connector.closed:
+            self._connector = aiohttp.TCPConnector(ssl=self._ssl_context)
+        return self._connector
+
     def setup_database(self):
-        os.makedirs("db", exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
+        conn = self.db.get("backup")
         cursor = conn.cursor()
-        
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS backup_passwords (
                 discord_id TEXT PRIMARY KEY,
@@ -37,43 +48,30 @@ class BackupOperations(commands.Cog):
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
+
         conn.commit()
-        conn.close()
 
     def cog_unload(self):
         self.automatic_backup_loop.cancel()
 
     def log_backup(self, admin_id: str, success: bool, backup_type: str, backup_url: str = None, error_message: str = None):
-        try:
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            log_message = f"[{timestamp}] "
-            log_message += f"Type: {backup_type} | "
-            log_message += f"Admin ID: {admin_id} | "
-            log_message += f"Status: {'✅ Success' if success else '❌ Failed'}"
-            if backup_url:
-                log_message += f" | Download Link: {backup_url}"
-            if error_message:
-                log_message += f" | Error: {error_message}"
-            log_message += "\n"
-            log_message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-
-            with open(self.log_path, 'a', encoding='utf-8') as log_file:
-                log_file.write(log_message)
-        except Exception as e:
-            print(f"Logging error: {e}")
+        status = "Success" if success else "Failed"
+        msg = f"Type: {backup_type} | Admin ID: {admin_id} | Status: {status}"
+        if backup_url:
+            msg += f" | Download Link: {backup_url}"
+        if error_message:
+            msg += f" | Error: {error_message}"
+        if success:
+            logger.info(msg)
+        else:
+            logger.warning(msg)
 
     @tasks.loop(hours=3)
     async def automatic_backup_loop(self):
         try:
-            conn = sqlite3.connect("db/settings.sqlite")
-            cursor = conn.cursor()
-            cursor.execute("SELECT id FROM admin WHERE is_initial = 1")
-            global_admins = cursor.fetchall()
-            conn.close()
+            global_admin_ids = get_global_admin_ids()
 
-            for admin_id in global_admins:
-                admin_id = admin_id[0]
+            for admin_id in global_admin_ids:
                 try:
                     backup_url = await self.create_backup(admin_id)
                     if backup_url:
@@ -84,20 +82,15 @@ class BackupOperations(commands.Cog):
                     self.log_backup(admin_id, False, "Automatic Backup", None, str(e))
 
         except Exception as e:
-            print(f"Automatic backup error: {e}")
+            logger.error(f"Automatic backup error: {e}")
 
     @automatic_backup_loop.before_loop
     async def before_automatic_backup(self):
         await self.bot.wait_until_ready()
         try:
-            conn = sqlite3.connect("db/settings.sqlite")
-            cursor = conn.cursor()
-            cursor.execute("SELECT id FROM admin WHERE is_initial = 1")
-            global_admins = cursor.fetchall()
-            conn.close()
+            global_admin_ids = get_global_admin_ids()
 
-            for admin_id in global_admins:
-                admin_id = admin_id[0]
+            for admin_id in global_admin_ids:
                 try:
                     backup_url = await self.create_backup(admin_id)
                     if backup_url:
@@ -108,15 +101,10 @@ class BackupOperations(commands.Cog):
                     self.log_backup(admin_id, False, "Startup Backup", None, str(e))
 
         except Exception as e:
-            print(f"Startup backup error: {e}")
+            logger.error(f"Startup backup error: {e}")
 
     async def is_global_admin(self, discord_id):
-        conn = sqlite3.connect("db/settings.sqlite")
-        cursor = conn.cursor()
-        cursor.execute("SELECT is_initial FROM admin WHERE id = ?", (str(discord_id),))
-        result = cursor.fetchone()
-        conn.close()
-        return result is not None and result[0] == 1
+        return check_global_admin(int(discord_id))
 
     async def show_backup_menu(self, interaction: discord.Interaction):
         if not await self.is_global_admin(interaction.user.id):
@@ -143,12 +131,11 @@ class BackupOperations(commands.Cog):
 
     async def create_backup(self, user_id: str):
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db.get("backup")
             cursor = conn.cursor()
             cursor.execute("SELECT backup_password FROM backup_passwords WHERE discord_id = ?", (user_id,))
             result = cursor.fetchone()
             backup_password = result[0] if result else None
-            conn.close()
 
             if not backup_password:
                 return None
@@ -210,20 +197,20 @@ Thank you for using our bot! ❤️
                 os.remove(zip_path)
 
                 if os.path.getsize(secured_zip) > 2 * 1024 * 1024:
-                    print(f"Backup file size exceeds 2MB limit for user {user_id}")
+                    logger.warning(f"Backup file size exceeds 2MB limit for user {user_id}")
                     return None
 
-                ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
+                if not self.api_url or not self.api_key:
+                    logger.info("Backup created but no backup API configured; cannot upload.")
+                    return None
 
-                async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+                async with aiohttp.ClientSession(connector=self._get_connector(), connector_owner=False) as session:
                     with open(secured_zip, 'rb') as f:
                         data = aiohttp.FormData()
                         data.add_field('file', f)
                         data.add_field('discord_id', str(user_id))
                         data.add_field('timestamp', timestamp.strftime('%Y-%m-%d %H:%M:%S'))
-                        
+
                         headers = {'X-API-Key': self.api_key}
                         async with session.post(f"{self.api_url}?action=upload", data=data, headers=headers) as response:
                             if response.status == 200:
@@ -234,21 +221,19 @@ Thank you for using our bot! ❤️
                                 return file_url
                             else:
                                 error_text = await response.text()
-                                print(f"API Error: {error_text}")
+                                logger.error(f"API Error: {error_text}")
                                 return None
 
         except Exception as e:
-            print(f"Backup creation error: {e}")
-            traceback.print_exc()
+            logger.exception(f"Backup creation error: {e}")
             return None
 
     async def get_backup_list(self, user_id: str):
+        if not self.api_url or not self.api_key:
+            logger.info("Backup list unavailable (no backup API configured)")
+            return None
         try:
-            ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-
-            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+            async with aiohttp.ClientSession(connector=self._get_connector(), connector_owner=False) as session:
                 headers = {'X-API-Key': self.api_key}
                 params = {'discord_id': user_id, 'action': 'list'}
                 async with session.get(self.api_url, params=params, headers=headers) as response:
@@ -257,18 +242,23 @@ Thank you for using our bot! ❤️
                         return result
                     return None
         except Exception as e:
-            traceback.print_exc()
+            logger.exception("Failed to get backup list")
             return None
 
 class BackupView(discord.ui.View):
     def __init__(self, cog):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
         self.cog = cog
-        self.current_page = 0
-        self.backup_pages = []
-        self.selected_date = None
 
-    @discord.ui.button(label="Create/Change Password", emoji="🔐", style=discord.ButtonStyle.primary, row=0)
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        try:
+            await self.message.edit(view=self)
+        except Exception as e:
+            logger.debug("Failed to edit message on timeout: %s", e)
+
+    @discord.ui.button(label="Create/Change Password", emoji="⚙️", style=discord.ButtonStyle.secondary, row=0)
     async def create_password(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = BackupPasswordModal(self.cog)
         await interaction.response.send_modal(modal)
@@ -321,12 +311,12 @@ class BackupView(discord.ui.View):
             try:
                 await interaction.followup.send(embed=self.backup_pages[0][0], view=view, ephemeral=True)
             except Exception as e:
-                traceback.print_exc()
+                logger.exception("Error processing backup list")
                 await interaction.followup.send("❌ Error processing backup list!", ephemeral=True)
         else:
             await interaction.followup.send("❌ Error processing backup list!", ephemeral=True)
 
-    @discord.ui.button(label="Create Backup", emoji="💾", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="Create Backup", emoji="▶️", style=discord.ButtonStyle.success, row=0)
     async def manual_backup(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         backup_url = await self.cog.create_backup(str(interaction.user.id))
@@ -350,11 +340,10 @@ class BackupView(discord.ui.View):
             self.cog.log_backup(str(interaction.user.id), True, "Manual Backup", backup_url)
             await interaction.followup.send(embed=embed, ephemeral=True)
         else:
-            conn = sqlite3.connect(self.cog.db_path)
+            conn = self.cog.db.get("backup")
             cursor = conn.cursor()
             cursor.execute("SELECT backup_password FROM backup_passwords WHERE discord_id = ?", (str(interaction.user.id),))
             has_password = cursor.fetchone() is not None
-            conn.close()
 
             embed = discord.Embed(
                 title="❌ Backup Error",
@@ -371,15 +360,33 @@ class BackupView(discord.ui.View):
             self.cog.log_backup(str(interaction.user.id), False, "Manual Backup", None, error_message)
             await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="Main Menu", emoji="🏠", style=discord.ButtonStyle.secondary, row=1)
-    async def main_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Back", emoji="◀️", style=discord.ButtonStyle.secondary, custom_id="backup_back", row=1)
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         other_features_cog = self.cog.bot.get_cog("OtherFeatures")
         if other_features_cog:
             await other_features_cog.show_other_features_menu(interaction)
 
+    @discord.ui.button(label="Main Menu", emoji="🏠", style=discord.ButtonStyle.secondary, custom_id="backup_main_menu", row=1)
+    async def main_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            alliance_cog = self.cog.bot.get_cog("Alliance")
+            if alliance_cog:
+                await alliance_cog.show_main_menu(interaction)
+            else:
+                await interaction.response.send_message(
+                    "❌ Alliance module not found.",
+                    ephemeral=True
+                )
+        except Exception as e:
+            logger.error(f"Error returning to main menu: {e}")
+            await interaction.response.send_message(
+                "❌ An error occurred while returning to main menu.",
+                ephemeral=True
+            )
+
 class BackupListView(discord.ui.View):
     def __init__(self, pages, user_id, cog):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
         self.pages = pages
         self.current_page = 0
         self.user_id = user_id
@@ -488,7 +495,7 @@ class BackupListView(discord.ui.View):
 
 class BackupDetailView(discord.ui.View):
     def __init__(self, pages, user_id, parent_view):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
         self.pages = pages
         self.current_page = 0
         self.user_id = user_id
@@ -551,30 +558,20 @@ class BackupPasswordModal(discord.ui.Modal, title="Create Backup Password"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        conn = sqlite3.connect(self.cog.db_path)
+        conn = self.cog.db.get("backup")
         cursor = conn.cursor()
-        
+
         cursor.execute(
             "INSERT OR REPLACE INTO backup_passwords (discord_id, backup_password) VALUES (?, ?)",
             (str(interaction.user.id), self.password.value)
         )
-        
-        conn.commit()
-        conn.close()
 
-        embed = discord.Embed(
-            title="✅ Password Saved",
-            description="Your backup password has been saved successfully!",
-            color=discord.Color.green()
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        conn.commit()
+
+        await send_success(interaction, "Your backup password has been saved successfully!", "✅ Password Saved")
 
         try:
-            conn = sqlite3.connect("db/settings.sqlite")
-            cursor = conn.cursor()
-            cursor.execute("SELECT id FROM admin WHERE is_initial = 1")
-            admin_ids = cursor.fetchall()
-            conn.close()
+            admin_id_list = get_global_admin_ids()
 
             admin_embed = discord.Embed(
                 title="🔐 Backup Password Change",
@@ -592,16 +589,16 @@ class BackupPasswordModal(discord.ui.Modal, title="Create Backup Password"):
                 inline=False
             )
 
-            for admin_id in admin_ids:
+            for admin_id in admin_id_list:
                 try:
-                    admin_user = await interaction.client.fetch_user(int(admin_id[0]))
+                    admin_user = await interaction.client.fetch_user(admin_id)
                     if admin_user and admin_user.id != interaction.user.id:
                         await admin_user.send(embed=admin_embed)
                 except Exception as e:
-                    print(f"Error sending notification to admin {admin_id[0]}: {e}")
+                    logger.error(f"Error sending notification to admin {admin_id}: {e}")
 
         except Exception as e:
-            print(f"Error sending admin notifications: {e}")
+            logger.error(f"Error sending admin notifications: {e}")
 
 async def setup(bot):
     await bot.add_cog(BackupOperations(bot))

@@ -1,42 +1,36 @@
 import discord
 from discord.ext import commands
-import sqlite3
 from datetime import datetime
-from .alliance_member_operations import AllianceSelectView
-from .alliance import PaginatedChannelView
+from .utils import AllianceSelectView, PaginatedChannelView, check_global_admin
+from .database import DatabaseManager
+from .log_config import get_logger
+
+logger = get_logger("logsystem")
 
 class LogSystem(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.settings_db = sqlite3.connect('db/settings.sqlite', check_same_thread=False)
-        self.settings_cursor = self.settings_db.cursor()
-        
-        self.alliance_db = sqlite3.connect('db/alliance.sqlite', check_same_thread=False)
-        self.alliance_cursor = self.alliance_db.cursor()
-        
+        db = DatabaseManager.instance()
+        self.settings_db = db.get("settings")
+
+        self.alliance_db = db.get("alliance")
+
         self.setup_database()
 
     def setup_database(self):
         try:
-            self.settings_cursor.execute("""
+            self.settings_db.execute("""
                 CREATE TABLE IF NOT EXISTS alliance_logs (
                     alliance_id INTEGER PRIMARY KEY,
                     channel_id INTEGER,
                     FOREIGN KEY (alliance_id) REFERENCES alliance_list (alliance_id)
                 )
             """)
-            
-            self.settings_db.commit()
-                
-        except Exception as e:
-            print(f"Error setting up log system database: {e}")
 
-    def __del__(self):
-        try:
-            self.settings_db.close()
-            self.alliance_db.close()
-        except:
-            pass
+            self.settings_db.commit()
+
+        except Exception as e:
+            logger.error(f"Error setting up log system database: {e}")
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
@@ -47,12 +41,9 @@ class LogSystem(commands.Cog):
         
         if custom_id == "log_system":
             try:
-                self.settings_cursor.execute("SELECT is_initial FROM admin WHERE id = ?", (interaction.user.id,))
-                result = self.settings_cursor.fetchone()
-                
-                if not result or result[0] != 1:
+                if not check_global_admin(interaction.user.id):
                     await interaction.response.send_message(
-                        "❌ Only global administrators can access the log system.", 
+                        "❌ Only global administrators can access the log system.",
                         ephemeral=True
                     )
                     return
@@ -103,6 +94,13 @@ class LogSystem(commands.Cog):
                     custom_id="bot_operations",
                     row=2
                 ))
+                view.add_item(discord.ui.Button(
+                    label="Main Menu",
+                    emoji="🏠",
+                    style=discord.ButtonStyle.secondary,
+                    custom_id="log_main_menu",
+                    row=2
+                ))
 
                 await interaction.response.send_message(
                     embed=log_embed,
@@ -111,30 +109,33 @@ class LogSystem(commands.Cog):
                 )
 
             except Exception as e:
-                print(f"Error in log system menu: {e}")
-                await interaction.response.send_message(
-                    "❌ An error occurred while accessing the log system.",
-                    ephemeral=True
-                )
+                logger.error(f"Error in log system menu: {e}")
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "❌ An error occurred while accessing the log system.",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send(
+                        "❌ An error occurred while accessing the log system.",
+                        ephemeral=True
+                    )
 
         elif custom_id == "set_log_channel":
             try:
-                self.settings_cursor.execute("SELECT is_initial FROM admin WHERE id = ?", (interaction.user.id,))
-                result = self.settings_cursor.fetchone()
-                
-                if not result or result[0] != 1:
+                if not check_global_admin(interaction.user.id):
                     await interaction.response.send_message(
-                        "❌ Only global administrators can set log channels.", 
+                        "❌ Only global administrators can set log channels.",
                         ephemeral=True
                     )
                     return
 
-                self.alliance_cursor.execute("""
+                cursor = self.alliance_db.execute("""
                     SELECT alliance_id, name 
                     FROM alliance_list 
                     ORDER BY name
                 """)
-                alliances = self.alliance_cursor.fetchall()
+                alliances = cursor.fetchall()
 
                 if not alliances:
                     await interaction.response.send_message(
@@ -144,12 +145,13 @@ class LogSystem(commands.Cog):
                     return
 
                 alliances_with_counts = []
+                users_db = DatabaseManager.instance().get("users")
                 for alliance_id, name in alliances:
-                    with sqlite3.connect('db/users.sqlite') as users_db:
-                        cursor = users_db.cursor()
-                        cursor.execute("SELECT COUNT(*) FROM users WHERE alliance = ?", (alliance_id,))
-                        member_count = cursor.fetchone()[0]
-                        alliances_with_counts.append((alliance_id, name, member_count))
+                    cursor = users_db.cursor()
+                    cursor.execute("SELECT COUNT(*) FROM users WHERE alliance = ?", (alliance_id,))
+                    row = cursor.fetchone()
+                    member_count = row[0] if row else 0
+                    alliances_with_counts.append((alliance_id, name, member_count))
 
                 alliance_embed = discord.Embed(
                     title="📝 Set Log Channel",
@@ -185,14 +187,15 @@ class LogSystem(commands.Cog):
                             try:
                                 channel_id = int(channel_interaction.data["values"][0])
                                 
-                                self.settings_cursor.execute("""
+                                self.settings_db.execute("""
                                     INSERT OR REPLACE INTO alliance_logs (alliance_id, channel_id)
                                     VALUES (?, ?)
                                 """, (alliance_id, channel_id))
                                 self.settings_db.commit()
 
-                                self.alliance_cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
-                                alliance_name = self.alliance_cursor.fetchone()[0]
+                                cursor = self.alliance_db.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
+                                row = cursor.fetchone()
+                                alliance_name = row[0] if row else "Unknown"
 
                                 success_embed = discord.Embed(
                                     title="✅ Log Channel Set",
@@ -210,11 +213,17 @@ class LogSystem(commands.Cog):
                                 )
 
                             except Exception as e:
-                                print(f"Error setting log channel: {e}")
-                                await channel_interaction.response.send_message(
-                                    "❌ An error occurred while setting the log channel.",
-                                    ephemeral=True
-                                )
+                                logger.error(f"Error setting log channel: {e}")
+                                if channel_interaction.response.is_done():
+                                    await channel_interaction.followup.send(
+                                        "❌ An error occurred while setting the log channel.",
+                                        ephemeral=True
+                                    )
+                                else:
+                                    await channel_interaction.response.send_message(
+                                        "❌ An error occurred while setting the log channel.",
+                                        ephemeral=True
+                                    )
 
                         channels = select_interaction.guild.text_channels
                         channel_view = PaginatedChannelView(channels, channel_select_callback)
@@ -231,7 +240,7 @@ class LogSystem(commands.Cog):
                             )
 
                     except Exception as e:
-                        print(f"Error in alliance selection: {e}")
+                        logger.error(f"Error in alliance selection: {e}")
                         if not select_interaction.response.is_done():
                             await select_interaction.response.send_message(
                                 "❌ An error occurred while processing your selection.",
@@ -250,7 +259,7 @@ class LogSystem(commands.Cog):
                 )
 
             except Exception as e:
-                print(f"Error in set log channel: {e}")
+                logger.error(f"Error in set log channel: {e}")
                 await interaction.response.send_message(
                     "❌ An error occurred while setting up the log channel.",
                     ephemeral=True
@@ -258,21 +267,18 @@ class LogSystem(commands.Cog):
 
         elif custom_id == "remove_log_channel":
             try:
-                self.settings_cursor.execute("SELECT is_initial FROM admin WHERE id = ?", (interaction.user.id,))
-                result = self.settings_cursor.fetchone()
-                
-                if not result or result[0] != 1:
+                if not check_global_admin(interaction.user.id):
                     await interaction.response.send_message(
-                        "❌ Only global administrators can remove log channels.", 
+                        "❌ Only global administrators can remove log channels.",
                         ephemeral=True
                     )
                     return
 
-                self.settings_cursor.execute("""
+                cursor = self.settings_db.execute("""
                     SELECT al.alliance_id, al.channel_id 
                     FROM alliance_logs al
                 """)
-                log_entries = self.settings_cursor.fetchall()
+                log_entries = cursor.fetchall()
 
                 if not log_entries:
                     await interaction.response.send_message(
@@ -282,16 +288,17 @@ class LogSystem(commands.Cog):
                     return
 
                 alliances_with_counts = []
+                users_db = DatabaseManager.instance().get("users")
                 for alliance_id, channel_id in log_entries:
-                    self.alliance_cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
-                    alliance_result = self.alliance_cursor.fetchone()
+                    cursor = self.alliance_db.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
+                    alliance_result = cursor.fetchone()
                     alliance_name = alliance_result[0] if alliance_result else "Unknown Alliance"
 
-                    with sqlite3.connect('db/users.sqlite') as users_db:
-                        cursor = users_db.cursor()
-                        cursor.execute("SELECT COUNT(*) FROM users WHERE alliance = ?", (alliance_id,))
-                        member_count = cursor.fetchone()[0]
-                        alliances_with_counts.append((alliance_id, alliance_name, member_count))
+                    cursor = users_db.cursor()
+                    cursor.execute("SELECT COUNT(*) FROM users WHERE alliance = ?", (alliance_id,))
+                    row = cursor.fetchone()
+                    member_count = row[0] if row else 0
+                    alliances_with_counts.append((alliance_id, alliance_name, member_count))
 
                 if not alliances_with_counts:
                     await interaction.response.send_message(
@@ -317,12 +324,26 @@ class LogSystem(commands.Cog):
                     try:
                         alliance_id = int(view.current_select.values[0])
                         
-                        self.alliance_cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
-                        alliance_name = self.alliance_cursor.fetchone()[0]
-                        
-                        self.settings_cursor.execute("SELECT channel_id FROM alliance_logs WHERE alliance_id = ?", (alliance_id,))
-                        channel_id = self.settings_cursor.fetchone()[0]
-                        
+                        cursor = self.alliance_db.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
+                        row = cursor.fetchone()
+                        alliance_name = row[0] if row else "Unknown"
+
+                        cursor = self.settings_db.execute("SELECT channel_id FROM alliance_logs WHERE alliance_id = ?", (alliance_id,))
+                        row = cursor.fetchone()
+                        if not row:
+                            if not select_interaction.response.is_done():
+                                await select_interaction.response.send_message(
+                                    "❌ No log channel found for this alliance.",
+                                    ephemeral=True
+                                )
+                            else:
+                                await select_interaction.followup.send(
+                                    "❌ No log channel found for this alliance.",
+                                    ephemeral=True
+                                )
+                            return
+                        channel_id = row[0]
+
                         confirm_embed = discord.Embed(
                             title="⚠️ Confirm Removal",
                             description=(
@@ -338,7 +359,7 @@ class LogSystem(commands.Cog):
                         
                         async def confirm_callback(button_interaction: discord.Interaction):
                             try:
-                                self.settings_cursor.execute("""
+                                self.settings_db.execute("""
                                     DELETE FROM alliance_logs 
                                     WHERE alliance_id = ?
                                 """, (alliance_id,))
@@ -360,7 +381,7 @@ class LogSystem(commands.Cog):
                                 )
 
                             except Exception as e:
-                                print(f"Error removing log channel: {e}")
+                                logger.error(f"Error removing log channel: {e}")
                                 await button_interaction.response.send_message(
                                     "❌ An error occurred while removing the log channel.",
                                     ephemeral=True
@@ -408,7 +429,7 @@ class LogSystem(commands.Cog):
                             )
 
                     except Exception as e:
-                        print(f"Error in alliance selection: {e}")
+                        logger.error(f"Error in alliance selection: {e}")
                         if not select_interaction.response.is_done():
                             await select_interaction.response.send_message(
                                 "❌ An error occurred while processing your selection.",
@@ -429,7 +450,7 @@ class LogSystem(commands.Cog):
                 )
 
             except Exception as e:
-                print(f"Error in remove log channel: {e}")
+                logger.error(f"Error in remove log channel: {e}")
                 await interaction.response.send_message(
                     "❌ An error occurred while setting up the removal menu.",
                     ephemeral=True
@@ -437,22 +458,19 @@ class LogSystem(commands.Cog):
 
         elif custom_id == "view_log_channels":
             try:
-                self.settings_cursor.execute("SELECT is_initial FROM admin WHERE id = ?", (interaction.user.id,))
-                result = self.settings_cursor.fetchone()
-                
-                if not result or result[0] != 1:
+                if not check_global_admin(interaction.user.id):
                     await interaction.response.send_message(
-                        "❌ Only global administrators can view log channels.", 
+                        "❌ Only global administrators can view log channels.",
                         ephemeral=True
                     )
                     return
 
-                self.settings_cursor.execute("""
+                cursor = self.settings_db.execute("""
                     SELECT alliance_id, channel_id 
                     FROM alliance_logs 
                     ORDER BY alliance_id
                 """)
-                log_entries = self.settings_cursor.fetchall()
+                log_entries = cursor.fetchall()
 
                 if not log_entries:
                     await interaction.response.send_message(
@@ -468,8 +486,8 @@ class LogSystem(commands.Cog):
                 )
 
                 for alliance_id, channel_id in log_entries:
-                    self.alliance_cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
-                    alliance_result = self.alliance_cursor.fetchone()
+                    cursor = self.alliance_db.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
+                    alliance_result = cursor.fetchone()
                     alliance_name = alliance_result[0] if alliance_result else "Unknown Alliance"
 
                     channel = interaction.guild.get_channel(channel_id)
@@ -503,11 +521,29 @@ class LogSystem(commands.Cog):
                 )
 
             except Exception as e:
-                print(f"Error in view log channels: {e}")
+                logger.error(f"Error in view log channels: {e}")
                 await interaction.response.send_message(
                     "❌ An error occurred while viewing log channels.",
                     ephemeral=True
                 )
+
+        elif custom_id == "log_main_menu":
+            try:
+                alliance_cog = self.bot.get_cog("Alliance")
+                if alliance_cog:
+                    await alliance_cog.show_main_menu(interaction)
+                else:
+                    await interaction.response.send_message(
+                        "❌ Alliance module not found.",
+                        ephemeral=True
+                    )
+            except Exception as e:
+                logger.error(f"Error returning to main menu: {e}")
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "❌ An error occurred while returning to the main menu.",
+                        ephemeral=True
+                    )
 
 async def setup(bot):
     await bot.add_cog(LogSystem(bot))
