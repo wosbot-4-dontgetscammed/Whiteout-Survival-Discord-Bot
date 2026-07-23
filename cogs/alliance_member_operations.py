@@ -987,7 +987,7 @@ class AllianceMemberOperations(commands.Cog):
         select.callback = select_callback
         await interaction.response.send_message("Please select an alliance:", view=view, ephemeral=True)
 
-    async def add_user(self, interaction: discord.Interaction, alliance_id: str, ids: str):
+    async def add_user(self, interaction: discord.Interaction, alliance_id: str, ids: str, kid: str = None):
         cursor = self.conn_alliance.cursor()
         cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
         alliance_name = cursor.fetchone()
@@ -1001,7 +1001,27 @@ class AllianceMemberOperations(commands.Cog):
             await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
             return
 
-        ids_list = [fid.strip() for fid in ids.split(",")]
+        # Parse the FID list. Each entry may carry its own region as "fid:kid";
+        # otherwise the batch-level `kid` (Region field) applies. Region is
+        # required because the WOS API no longer offers player-info-by-FID
+        # (see project_api_change_2026_07): without it we can neither fetch the
+        # nickname nor redeem gift codes for the member.
+        batch_kid = (str(kid).strip() if kid else "") or None
+        ids_list = []
+        kid_map = {}
+        for entry in ids.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if ":" in entry:
+                fid_part, kid_part = entry.split(":", 1)
+                fid_part = fid_part.strip()
+                kid_part = kid_part.strip()
+            else:
+                fid_part, kid_part = entry, batch_kid
+            ids_list.append(fid_part)
+            if kid_part:
+                kid_map[fid_part] = kid_part
 
         
         total_users = len(ids_list)
@@ -1058,6 +1078,24 @@ class AllianceMemberOperations(commands.Cog):
                         embed.color = discord.Color.blue()
                         await message.edit(embed=embed)
                         continue
+
+                    # 2026-07: the WOS player-info endpoint (/api/player) was
+                    # removed upstream, so fetch_player_info can no longer return
+                    # a nickname/furnace for a FID. When it fails, fall back to a
+                    # placeholder record built from the admin-supplied region so
+                    # the member is still registered and eligible for gift codes.
+                    # If the endpoint ever returns, real data is used instead and
+                    # this branch is skipped automatically.
+                    if not (isinstance(data, dict) and data.get('data')):
+                        pkid = kid_map.get(fid)
+                        if pkid:
+                            logger.info("Player API unavailable for FID %s - adding placeholder with kid=%s", fid, pkid)
+                            data = {"data": {
+                                "nickname": str(fid),
+                                "stove_lv": 0,
+                                "stove_lv_content": None,
+                                "kid": pkid,
+                            }}
 
                     if isinstance(data, dict) and data.get('data'):
                         nickname = data['data'].get('nickname')
@@ -1327,20 +1365,31 @@ class AddMemberModal(discord.ui.Modal):
         super().__init__(title="Add Member")
         self.alliance_id = alliance_id
         self.add_item(discord.ui.TextInput(
-            label="Enter IDs (comma-separated)", 
-            placeholder="Example: 12345,67890",
+            label="Enter IDs (comma-separated)",
+            placeholder="Example: 12345,67890  (or 12345:1587 per-region)",
             style=discord.TextStyle.paragraph
+        ))
+        # Region (kingdom id) is now REQUIRED: since 2026-07 the WOS API no
+        # longer exposes a player-info-by-FID endpoint, so the bot cannot look
+        # up a player's kingdom itself. One region applies to every FID above,
+        # unless overridden per-FID with the "fid:kid" syntax.
+        self.add_item(discord.ui.TextInput(
+            label="Region (kingdom id)",
+            placeholder="Example: 1587",
+            required=False,
         ))
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
 
-            
+
             ids = self.children[0].value
+            kid = self.children[1].value
             await interaction.client.get_cog("AllianceMemberOperations").add_user(
-                interaction, 
-                self.alliance_id, 
-                ids
+                interaction,
+                self.alliance_id,
+                ids,
+                kid,
             )
         except Exception as e:
             logger.info(f"ERROR: Modal submit error - {str(e)}")
