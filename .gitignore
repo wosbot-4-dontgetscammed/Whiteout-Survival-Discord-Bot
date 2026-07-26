@@ -27,3 +27,12 @@ upstream/
 
 # OS
 .DS_Store
+
+# Local backups (runtime data)
+backups/
+
+# Compiled OCR helper (build from tools/ocr_vision.swift)
+bin/
+
+# Claude Code session dir
+.claude/

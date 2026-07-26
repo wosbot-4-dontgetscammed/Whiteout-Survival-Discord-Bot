@@ -9,7 +9,7 @@ from .config import LEVEL_MAPPING
 from .database import DatabaseManager
 from .log_config import get_logger
 from .utils import build_embed, check_admin
-from .wos_api import fetch_player_info
+from .wos_api import fetch_player_info, resolve_kingdom
 
 logger = get_logger("id_channel")
 
@@ -165,6 +165,29 @@ class IDChannel(commands.Cog):
                             await message.reply("Operation failed due to API rate limit. Please try again later.", delete_after=10)
                             return
 
+                    # /api/player was removed upstream (2026-07): if no live data,
+                    # auto-detect the player's kingdom via the gift-code oracle and
+                    # register a placeholder (nickname=FID) so the member is still
+                    # added and eligible for gift codes. Real data is used if the
+                    # endpoint ever returns.
+                    if not (isinstance(data, dict) and data.get('data')):
+                        try:
+                            udb = DatabaseManager.instance().get("users")
+                            common = [str(r[0]) for r in udb.execute(
+                                "SELECT kid FROM users WHERE alliance=? AND kid IS NOT NULL AND kid!='' "
+                                "GROUP BY kid ORDER BY COUNT(*) DESC", (alliance_id,)).fetchall()]
+                            allk = [str(r[0]) for r in udb.execute(
+                                "SELECT DISTINCT kid FROM users WHERE kid IS NOT NULL AND kid!=''").fetchall()]
+                            cand = list(dict.fromkeys([*common, *allk]))
+                        except Exception:
+                            cand = []
+                        pkid = await resolve_kingdom(fid, cand) if cand else None
+                        if pkid:
+                            logger.info("id_channel: auto-detected kid=%s for FID %s (player API down)", pkid, fid)
+                            data = {"data": {"nickname": str(fid), "stove_lv": 0,
+                                             "stove_lv_content": None, "kid": pkid,
+                                             "avatar_image": None}}
+
                     if isinstance(data, dict) and data.get('data'):
                         nickname = data['data'].get('nickname')
                         furnace_lv = data['data'].get('stove_lv', 0)
@@ -217,7 +240,12 @@ class IDChannel(commands.Cog):
                         return
                     else:
                         await message.add_reaction('\u274c')
-                        await message.reply("No player found for this FID!", delete_after=10)
+                        await message.reply(
+                            "Could not add this FID \u2014 its kingdom could not be detected "
+                            "(the FID may be wrong, or in a kingdom none of your members are in). "
+                            "Add it manually with a region via Add Member.",
+                            delete_after=15,
+                        )
                         return
 
                 except Exception as e:

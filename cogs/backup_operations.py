@@ -137,92 +137,72 @@ class BackupOperations(commands.Cog):
             result = cursor.fetchone()
             backup_password = result[0] if result else None
 
-            if not backup_password:
+            db_files = [
+                os.path.join("db", f) for f in os.listdir("db") if f.endswith(".sqlite")
+            ]
+            if not db_files:
+                logger.warning("No database files found to back up")
                 return None
 
-            with tempfile.TemporaryDirectory() as temp_dir:
-                timestamp = datetime.now()
-                zip_filename = f"backup_{timestamp.strftime('%Y%m%d_%H%M%S')}.zip"
-                zip_path = os.path.join(temp_dir, zip_filename)
+            timestamp = datetime.now()
+            zip_filename = f"backup_{timestamp.strftime('%Y%m%d_%H%M%S_%f')}.zip"
+            backups_dir = os.path.join(os.getcwd(), "backups")
+            os.makedirs(backups_dir, exist_ok=True)
+            local_path = os.path.join(backups_dir, zip_filename)
 
-                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    for file in os.listdir("db"):
-                        if file.endswith(".sqlite"):
-                            file_path = os.path.join("db", file)
-                            zipf.write(file_path, os.path.basename(file_path))
-
-                    readme_content = f"""Backup Information
-----------------
-Created at: {timestamp}
-Discord ID: {user_id}
-Contains: All SQLite database files
-----------------
-🤖 WOS Discord Bot by Reloisback
-
-📱 Social Links:
-• GitHub: https://github.com/Reloisback/Whiteout-Survival-Discord-Bot
-• Discord: https://discord.gg/h8w6N6my4a
-• Support: https://buymeacoffee.com/reloisback
-
-Thank you for using our bot! ❤️
-"""
-                    zipf.writestr("README.txt", readme_content)
-
-                    comment = f"""📦 WOS Discord Bot Backup File
-━━━━━━━━━━━━━━━━━━━━━━
-📅 Creation Date: {timestamp.strftime('%d.%m.%Y %H:%M:%S')}
-👤 Discord ID: {user_id}
-📂 Content: SQLite Database Files
-🔐 Password Protected: Yes
-━━━━━━━━━━━━━━━━━━━━━━
-ℹ️ This backup was created by WOS Discord Bot developed by Reloisback.
-⚠️ Use your backup password from the Backup menu to open this file.
-
-📱 Social Media:
-• GitHub: https://github.com/Reloisback/Whiteout-Survival-Discord-Bot
-• Discord: https://discord.gg/h8w6N6my4a
-• Support: https://buymeacoffee.com/reloisback
-
-💡 Join our Discord server if you need help!""".encode('utf-8')
-                    zipf.comment = comment
-
-                secured_zip = os.path.join(temp_dir, f"secured_{zip_filename}")
-                with pyzipper.AESZipFile(secured_zip, 'w', compression=pyzipper.ZIP_LZMA, encryption=pyzipper.WZ_AES) as zf:
+            # Write the backup locally. Encrypt with the operator's backup
+            # password if one is set; otherwise a plain zip (the host machine is
+            # the operator's own). The old wosland upload API is defunct, so
+            # local backups are the reliable path.
+            if backup_password:
+                with pyzipper.AESZipFile(local_path, 'w', compression=pyzipper.ZIP_LZMA,
+                                         encryption=pyzipper.WZ_AES) as zf:
                     zf.setpassword(backup_password.encode())
-                    with zipfile.ZipFile(zip_path, 'r') as normal_zip:
-                        zf.comment = normal_zip.comment
-                        for file in normal_zip.namelist():
-                            zf.writestr(file, normal_zip.read(file))
+                    for fp in db_files:
+                        zf.write(fp, os.path.basename(fp))
+            else:
+                with zipfile.ZipFile(local_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for fp in db_files:
+                        zf.write(fp, os.path.basename(fp))
 
-                os.remove(zip_path)
+            # Keep only the most recent 14 local backups.
+            try:
+                existing = sorted(
+                    (os.path.join(backups_dir, f) for f in os.listdir(backups_dir)
+                     if f.startswith("backup_") and f.endswith(".zip")),
+                    key=os.path.getmtime, reverse=True,
+                )
+                for old in existing[14:]:
+                    os.remove(old)
+            except Exception as e:
+                logger.debug("Backup prune skipped: %s", e)
 
-                if os.path.getsize(secured_zip) > 2 * 1024 * 1024:
-                    logger.warning(f"Backup file size exceeds 2MB limit for user {user_id}")
-                    return None
+            size_kb = os.path.getsize(local_path) / 1024
+            logger.info("Local backup created: %s (%.0f KB, %s)", local_path, size_kb,
+                        "encrypted" if backup_password else "unencrypted")
 
-                if not self.api_url or not self.api_key:
-                    logger.info("Backup created but no backup API configured; cannot upload.")
-                    return None
+            # Optional off-site upload, only if a backup API is configured.
+            if self.api_url and self.api_key:
+                try:
+                    async with aiohttp.ClientSession(connector=self._get_connector(), connector_owner=False) as session:
+                        with open(local_path, 'rb') as f:
+                            data = aiohttp.FormData()
+                            data.add_field('file', f)
+                            data.add_field('discord_id', str(user_id))
+                            data.add_field('timestamp', timestamp.strftime('%Y-%m-%d %H:%M:%S'))
+                            headers = {'X-API-Key': self.api_key}
+                            async with session.post(f"{self.api_url}?action=upload", data=data, headers=headers) as response:
+                                if response.status == 200:
+                                    payload = await response.json()
+                                    file_url = payload.get('file_url')
+                                    if file_url:
+                                        return f"{file_url}&api_key={self.api_key}"
+                                else:
+                                    logger.error("Backup upload API error: %s", await response.text())
+                except Exception as e:
+                    logger.warning("Backup upload failed (local backup still saved): %s", e)
 
-                async with aiohttp.ClientSession(connector=self._get_connector(), connector_owner=False) as session:
-                    with open(secured_zip, 'rb') as f:
-                        data = aiohttp.FormData()
-                        data.add_field('file', f)
-                        data.add_field('discord_id', str(user_id))
-                        data.add_field('timestamp', timestamp.strftime('%Y-%m-%d %H:%M:%S'))
-
-                        headers = {'X-API-Key': self.api_key}
-                        async with session.post(f"{self.api_url}?action=upload", data=data, headers=headers) as response:
-                            if response.status == 200:
-                                result = await response.json()
-                                file_url = result.get('file_url')
-                                if file_url:
-                                    file_url = f"{file_url}&api_key={self.api_key}"
-                                return file_url
-                            else:
-                                error_text = await response.text()
-                                logger.error(f"API Error: {error_text}")
-                                return None
+            return local_path
 
         except Exception as e:
             logger.exception(f"Backup creation error: {e}")

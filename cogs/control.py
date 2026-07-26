@@ -119,8 +119,17 @@ class Control(commands.Cog):
 
         furnace_changes, nickname_changes, kid_changes = [], [], []
 
+        # The /api/player endpoint was removed upstream (2026-07), so per-member
+        # furnace/nickname sync can no longer fetch live data. Probe once instead
+        # of hammering the dead endpoint for every member each cycle; skip the
+        # sync loop while it is down. Auto-resumes if the endpoint ever returns.
+        probe = await self.fetch_user_data(users[0][0]) if users else None
+        player_api_alive = isinstance(probe, dict) and isinstance(probe.get('data'), dict)
+        if not player_api_alive:
+            logger.info("%s: player-info API unavailable - skipping furnace/nickname sync this cycle", alliance_name)
+
         i = 0
-        while i < total_users:
+        while player_api_alive and i < total_users:
             batch_users = users[i:i+20]
             for fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid in batch_users:
                 data = await self.fetch_user_data(fid)

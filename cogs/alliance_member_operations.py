@@ -9,7 +9,7 @@ from .config import LEVEL_MAPPING, FL_EMOJIS
 from .database import DatabaseManager
 from .utils import _create_monitored_task, PaginationView, build_embed, fix_rtl, AllianceSelectView, FIDSearchModal, check_admin as _utils_check_admin, get_admin_info as _utils_get_admin_info
 from .log_config import get_logger
-from .wos_api import fetch_player_info
+from .wos_api import fetch_player_info, resolve_kingdom
 
 logger = get_logger("alliance_member_operations")
 
@@ -1060,6 +1060,21 @@ class AllianceMemberOperations(commands.Cog):
             logger.info("ADD_MEMBERS admin=%s alliance=%s(%s) fids=%s count=%d",
                         interaction.user.id, alliance_name, alliance_id, ids, total_users)
 
+            # Candidate kingdoms for auto-detecting a FID's region via the
+            # gift-code oracle (used only when no region was supplied). Try the
+            # kingdoms this alliance's existing members live in first (most
+            # common first), then any other known kingdom.
+            try:
+                common_kids = [str(r[0]) for r in self.conn_users.execute(
+                    "SELECT kid FROM users WHERE alliance=? AND kid IS NOT NULL AND kid!='' "
+                    "GROUP BY kid ORDER BY COUNT(*) DESC", (alliance_id,)).fetchall()]
+                all_kids = [str(r[0]) for r in self.conn_users.execute(
+                    "SELECT DISTINCT kid FROM users WHERE kid IS NOT NULL AND kid!=''").fetchall()]
+            except Exception as e:
+                logger.warning("Could not build kid candidate list: %s", e)
+                common_kids, all_kids = [], []
+            auto_candidates = list(dict.fromkeys([*common_kids, *all_kids]))
+
             index = 0
             while index < len(ids_list):
                 fid = ids_list[index]
@@ -1088,6 +1103,11 @@ class AllianceMemberOperations(commands.Cog):
                     # this branch is skipped automatically.
                     if not (isinstance(data, dict) and data.get('data')):
                         pkid = kid_map.get(fid)
+                        if not pkid and auto_candidates:
+                            # No region supplied - auto-detect it via the oracle.
+                            pkid = await resolve_kingdom(fid, auto_candidates)
+                            if pkid:
+                                logger.info("Auto-detected kingdom kid=%s for FID %s via gift-code oracle", pkid, fid)
                         if pkid:
                             logger.info("Player API unavailable for FID %s - adding placeholder with kid=%s", fid, pkid)
                             data = {"data": {
@@ -1374,8 +1394,8 @@ class AddMemberModal(discord.ui.Modal):
         # up a player's kingdom itself. One region applies to every FID above,
         # unless overridden per-FID with the "fid:kid" syntax.
         self.add_item(discord.ui.TextInput(
-            label="Region (kingdom id)",
-            placeholder="Example: 1587",
+            label="Region (kingdom id) - optional",
+            placeholder="Leave empty to auto-detect (e.g. 1587)",
             required=False,
         ))
 

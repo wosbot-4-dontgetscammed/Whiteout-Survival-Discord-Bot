@@ -351,6 +351,7 @@ if __name__ == "__main__":
             "cogs.backup_operations",
             "cogs.bear_trap_editor",
             "cogs.gift_scraper",
+            "cogs.screenshot_add",
         ]
         for ext in extensions:
             try:

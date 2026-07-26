@@ -110,7 +110,40 @@ class WCommand(commands.Cog):
                             await interaction.followup.send("API limit reached, your result will be displayed automatically shortly...")
                         await asyncio.sleep(retry_delay)
 
-            await interaction.followup.send(f"User with ID {fid} not found or an error occurred after multiple attempts.")
+            # Live /api/player was removed upstream (2026-07). Fall back to the
+            # data already stored for this member, so /w still works offline.
+            users_db = DatabaseManager.instance().get("users")
+            cursor = users_db.cursor()
+            cursor.execute("SELECT nickname, furnace_lv, kid, stove_lv_content, alliance FROM users WHERE fid=?", (fid,))
+            row = cursor.fetchone()
+            if row:
+                nickname, furnace_lv, kid, stove_lv_content, alliance_id = row
+                if isinstance(furnace_lv, int) and furnace_lv > 30:
+                    stove_level_name = self.level_mapping.get(furnace_lv, f"Level {furnace_lv}")
+                else:
+                    stove_level_name = f"Level {furnace_lv}"
+                fields = {
+                    "\U0001f194 FID": str(fid),
+                    "\U0001f525 Furnace Level": stove_level_name,
+                    "\U0001f30d State": str(kid),
+                }
+                if alliance_id:
+                    alliance_db = DatabaseManager.instance().get("alliance")
+                    acur = alliance_db.cursor()
+                    acur.execute("SELECT name FROM alliance_list WHERE alliance_id=?", (alliance_id,))
+                    alliance_info = acur.fetchone()
+                    if alliance_info:
+                        fields["\U0001f3f0 Alliance"] = alliance_info[0]
+                embed = build_embed(f"\U0001f464 {nickname}", fields, color=discord.Color.blue(),
+                                    footer="From bot records — live player API unavailable")
+                if isinstance(stove_lv_content, str) and stove_lv_content.startswith("http"):
+                    embed.set_thumbnail(url=stove_lv_content)
+                await interaction.followup.send(embed=embed)
+                return
+
+            await interaction.followup.send(
+                f"User with ID {fid} is not in the bot records, and the live player-lookup API was removed by the game (2026-07)."
+            )
 
         except Exception as e:
             logger.exception(f"An error occurred: {e}")

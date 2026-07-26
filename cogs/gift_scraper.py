@@ -68,7 +68,9 @@ SCRAPER_SOURCES = [
     ("gamesradar", "https://www.gamesradar.com/games/survival/whiteout-survival-codes-gift/", True),
     ("beebom", "https://beebom.com/whiteout-survival-codes/", True),
     ("dexerto", "https://www.dexerto.com/codes/whiteout-survival-codes-3295120/", True),
-    ("reddit", "https://www.reddit.com/r/whiteoutsurvival/new.json", True),
+    # Reddit requires OAuth for its .json API since 2023 and returns 403 to
+    # unauthenticated/server requests, so it never yielded codes - disabled.
+    ("reddit", "https://www.reddit.com/r/whiteoutsurvival/new.json", False),
 ]
 
 

@@ -246,7 +246,12 @@ class GiftCodeClaimer:
                 elif err_code == 40020:
                     # USER INFO ERROR - upstream could not resolve this fid/kid.
                     # Transient during the 2026-07 backend migration; retryable.
-                    logger.warning("USER INFO ERROR (40020) for %s kid=%s - upstream transient", player_id, kid)
+                    # Quiet for the periodic test-player ping (recurring noise);
+                    # keep it visible for real members (may signal a wrong kid).
+                    if player_id == WOS_TEST_PLAYER_ID:
+                        logger.debug("USER INFO ERROR (40020) for test player %s kid=%s - upstream transient", player_id, kid)
+                    else:
+                        logger.warning("USER INFO ERROR (40020) for %s kid=%s - upstream transient", player_id, kid)
                     status = "ERROR"
                 else:
                     status = "ERROR"
