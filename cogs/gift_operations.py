@@ -15,9 +15,16 @@ from .gift_ui import GiftUI
 from .gift_views import GiftView, RetryFailedView, CreateGiftCodeModal, DeleteGiftCodeModal
 from .log_config import get_logger
 from .utils import AllianceSelectView, PaginatedChannelView, _create_monitored_task, build_embed, check_admin, check_global_admin, get_admin_info as _utils_get_admin_info, get_global_admin_ids
+from .wos_api import resolve_kingdom
 
 
 logger = get_logger("gift_operations")
+
+# After this many gift cycles of an unresolvable (USER_INFO_ERROR) result — only
+# counted when the same batch had at least one success, i.e. upstream is up — a
+# member is oracle-verified and, if truly gone, flagged inactive so the retry
+# loop stops probing them.
+INACTIVE_THRESHOLD = 3
 
 
 class GiftOperations(commands.Cog):
@@ -48,6 +55,19 @@ class GiftOperations(commands.Cog):
         """)
         self.conn.commit()
 
+        # Inactive-member tracking: columns for skipping persistently
+        # unresolvable members (moved to an untracked kingdom / gone).
+        users_conn = DatabaseManager.instance().get("users")
+        for ddl in (
+            "ALTER TABLE users ADD COLUMN inactive INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN resolve_fail_count INTEGER DEFAULT 0",
+        ):
+            try:
+                users_conn.execute(ddl)
+                users_conn.commit()
+            except Exception:
+                pass  # column already exists
+
         self.claimer = GiftCodeClaimer()
         self.distributor = GiftDistributor(bot, self.claimer)
 
@@ -68,6 +88,70 @@ class GiftOperations(commands.Cog):
             await self.claimer.close()
         except Exception as e:
             logger.debug("Error closing claimer during cog unload: %s", e)
+
+    # ------------------------------------------------------------------
+    # Inactive-member handling (unresolvable via the WOS API)
+    # ------------------------------------------------------------------
+
+    def _reset_resolve_state(self, fid):
+        """A member redeemed successfully — clear any unreachable state."""
+        try:
+            users = DatabaseManager.instance().get("users")
+            users.execute(
+                "UPDATE users SET resolve_fail_count = 0, inactive = 0 "
+                "WHERE fid = ? AND (COALESCE(resolve_fail_count,0) != 0 OR COALESCE(inactive,0) != 0)",
+                (fid,))
+            users.commit()
+        except Exception as e:
+            logger.debug("reset resolve state failed for %s: %s", fid, e)
+
+    async def _evaluate_unreachable(self, fids, alliance_id):
+        """For members that returned USER_INFO_ERROR while upstream was up:
+        count the failure, and once past the threshold oracle-verify them.
+        If they now resolve in another of our kingdoms, auto-fix their kid;
+        if they resolve nowhere, flag them inactive so we stop retrying."""
+        users = DatabaseManager.instance().get("users")
+        try:
+            common = [str(r[0]) for r in users.execute(
+                "SELECT kid FROM users WHERE alliance=? AND kid IS NOT NULL AND kid!='' "
+                "GROUP BY kid ORDER BY COUNT(*) DESC", (str(alliance_id),)).fetchall()]
+            allk = [str(r[0]) for r in users.execute(
+                "SELECT DISTINCT kid FROM users WHERE kid IS NOT NULL AND kid!=''").fetchall()]
+        except Exception as e:
+            logger.debug("kid candidate query failed: %s", e)
+            common, allk = [], []
+        candidates = list(dict.fromkeys([*common, *allk]))
+
+        for fid in fids:
+            row = users.execute(
+                "SELECT nickname, kid, COALESCE(resolve_fail_count,0) FROM users WHERE fid=?",
+                (fid,)).fetchone()
+            if not row:
+                continue
+            nickname, stored_kid, fails = row
+            fails += 1
+            users.execute("UPDATE users SET resolve_fail_count=? WHERE fid=?", (fails, fid))
+            users.commit()
+            if fails < INACTIVE_THRESHOLD:
+                continue
+
+            real = await resolve_kingdom(fid, candidates) if candidates else None
+            if real and str(real) != str(stored_kid):
+                users.execute("UPDATE users SET kid=?, resolve_fail_count=0 WHERE fid=?", (real, fid))
+                users.commit()
+                logger.info("[MAINT] Auto-fixed kingdom for %s (%s): %s -> %s",
+                            nickname, fid, stored_kid, real)
+            elif real:
+                # Resolves at the stored kid after all — was transient; reset.
+                users.execute("UPDATE users SET resolve_fail_count=0 WHERE fid=?", (fid,))
+                users.commit()
+            else:
+                users.execute("UPDATE users SET inactive=1 WHERE fid=?", (fid,))
+                users.commit()
+                logger.warning(
+                    "[MAINT] %s (%s) marked INACTIVE — unresolvable in any known kingdom "
+                    "after %d cycles (moved to an untracked kingdom or account gone)",
+                    nickname, fid, fails)
 
     # ------------------------------------------------------------------
     # Background retry loop for missing redemptions
@@ -105,7 +189,9 @@ class GiftOperations(commands.Cog):
                     try:
                         users_conn = DatabaseManager.instance().get("users")
                         users_cursor = users_conn.cursor()
-                        users_cursor.execute("SELECT fid FROM users WHERE alliance = ?", (str(alliance_id),))
+                        users_cursor.execute(
+                            "SELECT fid FROM users WHERE alliance = ? AND COALESCE(inactive, 0) = 0",
+                            (str(alliance_id),))
                         members = [row[0] for row in users_cursor.fetchall()]
                     except Exception as e:
                         logger.error(f"[RETRY] DB error reading users for alliance {alliance_id}: {e}")
@@ -131,6 +217,7 @@ class GiftOperations(commands.Cog):
                     retried_success = 0
                     failed_details = []  # (nickname, reason)
                     code_dead = False
+                    uie_fids = []  # FIDs that returned USER_INFO_ERROR this batch
 
                     # Resolve FID → nickname for better reporting
                     users_conn = DatabaseManager.instance().get("users")
@@ -152,8 +239,12 @@ class GiftOperations(commands.Cog):
 
                             if result in ("SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE"):
                                 retried_success += 1
+                                self._reset_resolve_state(fid)
                             elif result == "STOVE_LV_ERROR":
                                 logger.info("[RETRY] %s - %s (%s) - skipped (furnace level too low)", giftcode, nickname, fid)
+                            elif result == "USER_INFO_ERROR":
+                                uie_fids.append(fid)
+                                failed_details.append((nickname, result))
                             else:
                                 failed_details.append((nickname, result))
 
@@ -164,6 +255,12 @@ class GiftOperations(commands.Cog):
                             logger.error("[RETRY] Error for %s (%s), code %s: %s", nickname, fid, giftcode, e)
                             failed_details.append((nickname, "ERROR"))
                             await asyncio.sleep(2)
+
+                    # Evaluate persistently-unreachable members only when upstream
+                    # is proven up this batch (at least one success), so a
+                    # transient upstream outage can never flag active members.
+                    if retried_success > 0 and uie_fids:
+                        await self._evaluate_unreachable(uie_fids, alliance_id)
 
                     if retried_success > 0 or failed_details:
                         logger.info("[RETRY] %s alliance %s: %d success, %d failed",

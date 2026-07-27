@@ -252,7 +252,9 @@ class GiftCodeClaimer:
                         logger.debug("USER INFO ERROR (40020) for test player %s kid=%s - upstream transient", player_id, kid)
                     else:
                         logger.warning("USER INFO ERROR (40020) for %s kid=%s - upstream transient", player_id, kid)
-                    status = "ERROR"
+                    # Distinct status so the retry loop can track persistently
+                    # unresolvable members (wrong kid / gone) and flag them.
+                    status = "USER_INFO_ERROR"
                 else:
                     status = "ERROR"
 

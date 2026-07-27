@@ -171,5 +171,57 @@ class ScreenshotAdd(commands.Cog):
         return choices[:25]
 
 
+class InactiveMembersView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="Reactivate All", emoji="♻️", style=discord.ButtonStyle.success)
+    async def reactivate(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not check_admin(interaction.user.id):
+            await interaction.response.send_message("No permission.", ephemeral=True)
+            return
+        users = DatabaseManager.instance().get("users")
+        n = users.execute("UPDATE users SET inactive=0, resolve_fail_count=0 WHERE COALESCE(inactive,0)=1").rowcount
+        users.commit()
+        logger.info("REACTIVATE_ALL admin=%s count=%s", interaction.user.id, n)
+        await interaction.response.edit_message(
+            content=f"♻️ Reactivated {n} member(s). They'll be retried next gift cycle.",
+            embed=None, view=None)
+
+
+class ScreenshotAddInactive(commands.Cog):
+    """Report + reactivate members flagged inactive by the gift retry loop."""
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(
+        name="inactive_members",
+        description="List members flagged inactive (unresolvable via the game API) and reactivate them")
+    async def inactive_members(self, interaction: discord.Interaction):
+        if not check_admin(interaction.user.id):
+            await interaction.response.send_message(
+                "You do not have permission to use this command.", ephemeral=True)
+            return
+        users = DatabaseManager.instance().get("users")
+        try:
+            rows = users.execute(
+                "SELECT fid, nickname, kid, alliance FROM users "
+                "WHERE COALESCE(inactive,0)=1 ORDER BY nickname").fetchall()
+        except Exception:
+            rows = []
+        if not rows:
+            await interaction.response.send_message("No inactive members. 🎉", ephemeral=True)
+            return
+        shown = rows[:25]
+        lines = "\n".join(f"`{fid}` {nick} — kid {kid}, alliance {a}" for fid, nick, kid, a in shown)
+        if len(rows) > len(shown):
+            lines += f"\n… and {len(rows) - len(shown)} more"
+        embed = build_embed(f"💤 Inactive Members ({len(rows)})", {"Flagged unresolvable": lines},
+                            footer="Moved to an untracked kingdom or account gone — skipped in gift redemption")
+        await interaction.response.send_message(embed=embed, view=InactiveMembersView(), ephemeral=True)
+
+
 async def setup(bot):
     await bot.add_cog(ScreenshotAdd(bot))
+    await bot.add_cog(ScreenshotAddInactive(bot))
