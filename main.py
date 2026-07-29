@@ -352,6 +352,7 @@ if __name__ == "__main__":
             "cogs.bear_trap_editor",
             "cogs.gift_scraper",
             "cogs.screenshot_add",
+            "cogs.regions",
         ]
         for ext in extensions:
             try:

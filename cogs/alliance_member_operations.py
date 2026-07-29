@@ -1073,7 +1073,12 @@ class AllianceMemberOperations(commands.Cog):
             except Exception as e:
                 logger.warning("Could not build kid candidate list: %s", e)
                 common_kids, all_kids = [], []
-            auto_candidates = list(dict.fromkeys([*common_kids, *all_kids]))
+            try:
+                from .regions import get_regions
+                configured_kids = [k for k, _ in get_regions(alliance_id)]
+            except Exception:
+                configured_kids = []
+            auto_candidates = list(dict.fromkeys([*configured_kids, *common_kids, *all_kids]))
 
             index = 0
             while index < len(ids_list):
@@ -1389,14 +1394,21 @@ class AddMemberModal(discord.ui.Modal):
             placeholder="Example: 12345,67890  (or 12345:1587 per-region)",
             style=discord.TextStyle.paragraph
         ))
-        # Region (kingdom id) is now REQUIRED: since 2026-07 the WOS API no
-        # longer exposes a player-info-by-FID endpoint, so the bot cannot look
-        # up a player's kingdom itself. One region applies to every FID above,
-        # unless overridden per-FID with the "fid:kid" syntax.
+        # Region (kingdom id): since 2026-07 the WOS API no longer exposes a
+        # player-info-by-FID endpoint, so the bot cannot look up a player's
+        # kingdom itself. Pre-filled with the alliance's default region (see
+        # /region_default); one region applies to every FID above, unless
+        # overridden per-FID with "fid:kid". Blank falls back to auto-detect.
+        try:
+            from .regions import get_default_region
+            default_region = get_default_region(alliance_id) or ""
+        except Exception:
+            default_region = ""
         self.add_item(discord.ui.TextInput(
             label="Region (kingdom id) - optional",
             placeholder="Leave empty to auto-detect (e.g. 1587)",
             required=False,
+            default=default_region,
         ))
 
     async def on_submit(self, interaction: discord.Interaction):
