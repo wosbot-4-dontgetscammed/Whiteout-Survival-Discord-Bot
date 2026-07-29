@@ -328,6 +328,47 @@ class GiftScraper(commands.Cog):
     # Core processing: validate + distribute new codes
     # ------------------------------------------------------------------
 
+    def _validation_fids(self, limit: int = 6) -> list:
+        """FIDs to validate candidate codes against. The configured test player
+        first, then active members with a known kingdom as fallback — so a
+        single dead/unresolvable account can never block validation."""
+        fids = []
+        if WOS_TEST_PLAYER_ID:
+            fids.append(WOS_TEST_PLAYER_ID)
+        try:
+            users = DatabaseManager.instance().get("users")
+            rows = users.execute(
+                "SELECT fid FROM users WHERE COALESCE(inactive,0)=0 AND kid IS NOT NULL AND kid!='' "
+                "ORDER BY furnace_lv DESC LIMIT ?", (limit,)).fetchall()
+            fids += [str(r[0]) for r in rows]
+        except Exception as e:
+            logger.debug("validation fids query failed: %s", e)
+        # de-dupe, preserve order
+        return list(dict.fromkeys(str(f) for f in fids))
+
+    async def _validate_code(self, gift_ops, code: str) -> str:
+        """Return 'valid' | 'invalid' | 'inconclusive'.
+
+        Tries several resolving players. A player that cannot be resolved
+        (USER_INFO_ERROR / ERROR) tells us nothing about the code, so we move
+        on; only a definitive expired/not-found/used verdict marks a code
+        invalid, and only a real redemption result marks it valid.
+        """
+        valid = ("SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE", "STOVE_LV_ERROR")
+        invalid = ("TIME_ERROR", "CDK_NOT_FOUND", "USAGE_LIMIT")
+        for fid in self._validation_fids():
+            try:
+                status = await gift_ops.claimer.claim_giftcode_rewards_wos(fid, code)
+            except Exception as e:
+                logger.debug("validate %s via %s error: %s", code, fid, e)
+                continue
+            if status in valid:
+                return "valid"
+            if status in invalid:
+                return "invalid"
+            # USER_INFO_ERROR / ERROR — this player didn't resolve; try next.
+        return "inconclusive"
+
     async def _process_new_codes(self, codes: list[str], source: str) -> int:
         new_count = 0
         gift_ops = self.bot.get_cog('GiftOperations')
@@ -346,16 +387,16 @@ class GiftScraper(commands.Cog):
                 self.conn.commit()
                 continue
 
-            # Validate via WOS API (test account)
+            # Validate via the WOS API against resolving players. An
+            # unresolvable player (USER_INFO_ERROR) is inconclusive — never an
+            # invalid code — so a dead validator can't discard valid codes.
             logger.info(f"Validating new candidate from {source}: {code}")
-            try:
-                status = await gift_ops.claimer.claim_giftcode_rewards_wos(WOS_TEST_PLAYER_ID, code)
-            except Exception as e:
-                logger.error(f"Validation error for {code}: {e}")
+            verdict = await self._validate_code(gift_ops, code)
+            if verdict == "invalid":
+                logger.info(f"Code {code} invalid (expired / not found / used up)")
                 continue
-
-            if status not in ("SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE"):
-                logger.info(f"Code {code} invalid (status: {status})")
+            if verdict == "inconclusive":
+                logger.info(f"Code {code} could not be validated (no player resolved) — will retry next cycle")
                 continue
 
             # Valid code — insert into DB
