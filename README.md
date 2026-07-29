@@ -12,6 +12,23 @@
 
 ---
 
+# 🔧 2026-07 — Adapting to the CenturyGame API change
+
+Around **2026-07-21** CenturyGame changed the Whiteout Survival gift API: the `/api/player` (player-info-by-FID) and `/api/captcha` endpoints were **removed**, and gift-code redemption now requires the player's **kingdom id (`kid`)**. This fork was updated to keep working:
+
+- **Gift redemption** rewritten to the new single-call, kingdom-aware flow (no captcha, no player pre-lookup). Every failure now reports a **specific reason** (e.g. `CDK_NOT_FOUND`, `USER_INFO_ERROR`, `RATE_LIMITED`) instead of a bare `ERROR`, and the `40019` per-FID throttle is retried.
+- **Kingdom auto-detect** — since a FID's kingdom can no longer be looked up, the bot detects it via a side-effect-free gift-code probe when needed.
+- **Per-alliance regions** — manage which kingdoms an alliance spans and set a default (`/region_add|remove|default|list`, or the **🌍 Manage Regions** button in the member menu). The default pre-fills the region when adding members.
+- **Add member / ID-channel** degrade gracefully: they register a placeholder profile + auto-detected kingdom when live data is unavailable.
+- **Screenshot add** (`/add_screenshot`, macOS) — recover a member's nickname/furnace from a profile screenshot via on-device Apple Vision OCR (offline, no API key). Build the helper with `swiftc -O tools/ocr_vision.swift -o bin/ocr_vision`.
+- **Inactive members** — members that are unresolvable for several cycles (moved to an untracked kingdom / gone) are flagged inactive and skipped, with `/inactive_members` to review and reactivate.
+- **Resilient gift-code scraper** — validates candidates against several resolving players; a dead validator can no longer discard valid codes.
+- **Local backups** — encrypted-or-plain backups now write to `backups/` (the old upload API is defunct).
+
+See [`CHANGELOG.md`](CHANGELOG.md) for detail.
+
+---
+
 # 🚀 Setup Guide for Beginners (Fork)
 
 > This section was added in the fork and is **not part of the original by Reloisback**. The original README continues below.

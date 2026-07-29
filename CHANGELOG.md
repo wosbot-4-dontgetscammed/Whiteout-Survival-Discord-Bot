@@ -10,6 +10,18 @@ Versions refer to fork milestones, not upstream releases.
 
 ## [Unreleased]
 
+### 2026-07 — CenturyGame API change adaptation
+CenturyGame removed the `/api/player` and `/api/captcha` endpoints (~2026-07-21) and made the kingdom id (`kid`) required for gift-code redemption. Changes to keep the fork working:
+- **Gift redemption** rewritten to the new single signed call (`fid`+`cdk`+`kid`+`time`), dropping the dead player-info pre-check and the captcha loop (`cogs/gift_api.py`).
+- **Specific failure reasons** everywhere instead of a bare `ERROR` (e.g. `CDK_NOT_FOUND`, `USER_INFO_ERROR`, `NO_KID`, `ERROR_<code>_<MSG>`); completed the signed-v2 error-code map and retry `40019` (per-FID throttle), never conflating it with `40020`.
+- **Kingdom auto-detect** via a side-effect-free gift-code oracle (`wos_api.resolve_kingdom`); used by add-member and the ID channel.
+- **Per-alliance regions** (`cogs/regions.py`): `alliance_regions` table, `/region_add|remove|default|list` commands, a **Manage Regions** button in the member menu, and auto-seeding of defaults from existing members. The default pre-fills add-member's region field.
+- **Inactive-member handling** (`cogs/gift_operations.py`): members unresolvable for several cycles (upstream-up gated) are flagged inactive and skipped, with `/inactive_members` to review/reactivate; stale kingdoms are auto-corrected when detectable.
+- **Screenshot member add** (`cogs/screenshot_add.py`, `cogs/screenshot_ocr.py`, `tools/ocr_vision.swift`): `/add_screenshot` reads nickname/furnace/kingdom from a profile screenshot via on-device Apple Vision OCR (macOS, offline, no API key).
+- **Resilient scraper** (`cogs/gift_scraper.py`): validates candidate codes against several resolving players so a dead validator can't discard valid codes; disabled the OAuth-gated Reddit source.
+- **Local backups** (`cogs/backup_operations.py`): encrypted-or-plain backups written to `backups/` (kept 14); the defunct upload API is optional.
+- **Graceful degradation** in `control.py` (probe once, skip furnace/nickname sync while the API is down, clearer status message) and `w.py` (falls back to stored records).
+
 ### Added
 - `requirements.txt` so users can install dependencies with a single `pip install -r requirements.txt`.
 - `CHANGELOG.md` (this file) tracking fork-specific changes.
