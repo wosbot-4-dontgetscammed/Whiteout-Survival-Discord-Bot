@@ -138,9 +138,52 @@ class AllianceMemberOperations(commands.Cog):
                 except Exception as e:
                     logger.info(f"Error in add_member_button: {e}")
                     await button_interaction.response.send_message(
-                        "An error occurred while processing your request.", 
+                        "An error occurred while processing your request.",
                         ephemeral=True
                     )
+
+            @discord.ui.button(
+                label="Manage Regions",
+                emoji="🌍",
+                style=discord.ButtonStyle.secondary,
+                custom_id="manage_regions",
+                row=1
+            )
+            async def manage_regions_button(self, button_interaction: discord.Interaction, button: discord.ui.Button):
+                try:
+                    if not _utils_get_admin_info(button_interaction.user.id):
+                        await button_interaction.response.send_message(
+                            "❌ You don't have permission to use this command.", ephemeral=True)
+                        return
+                    alliances, special_alliances, is_global = await self.cog.get_admin_alliances(
+                        button_interaction.user.id, button_interaction.guild_id)
+                    if not alliances:
+                        await button_interaction.response.send_message(
+                            "❌ No alliances found for your permissions.", ephemeral=True)
+                        return
+                    alliances_with_counts = []
+                    for alliance_id, name in alliances:
+                        users_db = DatabaseManager.instance().get("users")
+                        cnt = users_db.execute("SELECT COUNT(*) FROM users WHERE alliance = ?", (alliance_id,)).fetchone()
+                        alliances_with_counts.append((alliance_id, name, cnt[0] if cnt else 0))
+                    view = AllianceSelectView(alliances_with_counts, self.cog)
+
+                    async def select_callback(interaction: discord.Interaction):
+                        alliance_id = int(view.current_select.values[0])
+                        aname = next((n for aid, n in alliances if str(aid) == str(alliance_id)), str(alliance_id))
+                        from .regions import RegionManageView
+                        rview = RegionManageView(alliance_id, aname)
+                        await interaction.response.edit_message(content=None, embed=rview.embed(), view=rview)
+
+                    view.callback = select_callback
+                    await button_interaction.response.send_message(
+                        embed=discord.Embed(title="🌍 Select an alliance to manage its regions",
+                                            color=discord.Color.blurple()),
+                        view=view, ephemeral=True)
+                except Exception as e:
+                    logger.info(f"Error in manage_regions_button: {e}")
+                    await button_interaction.response.send_message(
+                        "An error occurred while processing your request.", ephemeral=True)
 
             @discord.ui.button(
                 label="Remove Member",

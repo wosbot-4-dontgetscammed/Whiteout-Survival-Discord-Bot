@@ -127,6 +127,19 @@ class Control(commands.Cog):
         player_api_alive = isinstance(probe, dict) and isinstance(probe.get('data'), dict)
         if not player_api_alive:
             logger.info("%s: player-info API unavailable - skipping furnace/nickname sync this cycle", alliance_name)
+            if message:
+                embed.set_field_at(
+                    1,
+                    name="📈 Progress",
+                    value=("⏸️ Furnace/nickname sync skipped — the game removed its "
+                           "player-info API (2026-07), so live member stats can't be "
+                           "fetched. Membership & gift-code delivery are unaffected."),
+                    inline=False,
+                )
+                try:
+                    await message.edit(embed=embed)
+                except Exception:
+                    pass
 
         i = 0
         while player_api_alive and i < total_users:

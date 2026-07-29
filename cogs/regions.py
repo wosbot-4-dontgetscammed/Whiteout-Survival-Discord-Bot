@@ -100,6 +100,106 @@ def _norm_region(region: str) -> str:
     return (region or "").strip().lstrip("#")
 
 
+# ----------------------------------------------------------------------
+# Interactive region management (button/menu UI, used from the alliance menu)
+# ----------------------------------------------------------------------
+
+class AddRegionModal(discord.ui.Modal):
+    def __init__(self, mgr_view):
+        super().__init__(title="Add Region")
+        self.mgr_view = mgr_view
+        self.kid_input = discord.ui.TextInput(label="Kingdom id", placeholder="e.g. 1587", max_length=6)
+        self.add_item(self.kid_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        region = _norm_region(self.kid_input.value)
+        if not region.isdigit():
+            await interaction.response.send_message("Region must be a number (e.g. 1587).", ephemeral=True)
+            return
+        db = _db()
+        count = db.execute("SELECT COUNT(*) FROM alliance_regions WHERE alliance_id=?",
+                           (self.mgr_view.alliance_id,)).fetchone()[0]
+        db.execute("INSERT OR IGNORE INTO alliance_regions (alliance_id, kid, is_default) VALUES (?,?,?)",
+                   (self.mgr_view.alliance_id, region, 1 if count == 0 else 0))
+        db.commit()
+        await self.mgr_view.refresh(interaction)
+
+
+class _AddRegionButton(discord.ui.Button):
+    def __init__(self, mgr_view):
+        super().__init__(label="Add Region", emoji="➕", style=discord.ButtonStyle.success, row=0)
+        self.mgr_view = mgr_view
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(AddRegionModal(self.mgr_view))
+
+
+class _DefaultSelect(discord.ui.Select):
+    def __init__(self, mgr_view, regs):
+        options = [discord.SelectOption(label=k, value=k, default=bool(d)) for k, d in regs][:25]
+        super().__init__(placeholder="⭐ Set default region…", options=options, row=1)
+        self.mgr_view = mgr_view
+
+    async def callback(self, interaction: discord.Interaction):
+        kid = self.values[0]
+        db = _db()
+        db.execute("UPDATE alliance_regions SET is_default=0 WHERE alliance_id=?", (self.mgr_view.alliance_id,))
+        db.execute("UPDATE alliance_regions SET is_default=1 WHERE alliance_id=? AND kid=?",
+                   (self.mgr_view.alliance_id, kid))
+        db.commit()
+        await self.mgr_view.refresh(interaction)
+
+
+class _RemoveSelect(discord.ui.Select):
+    def __init__(self, mgr_view, regs):
+        options = [discord.SelectOption(label=k, value=k) for k, d in regs][:25]
+        super().__init__(placeholder="🗑️ Remove region…", options=options, row=2)
+        self.mgr_view = mgr_view
+
+    async def callback(self, interaction: discord.Interaction):
+        kid = self.values[0]
+        db = _db()
+        was = db.execute("SELECT is_default FROM alliance_regions WHERE alliance_id=? AND kid=?",
+                         (self.mgr_view.alliance_id, kid)).fetchone()
+        db.execute("DELETE FROM alliance_regions WHERE alliance_id=? AND kid=?", (self.mgr_view.alliance_id, kid))
+        if was and was[0]:
+            nxt = db.execute("SELECT kid FROM alliance_regions WHERE alliance_id=? ORDER BY kid LIMIT 1",
+                             (self.mgr_view.alliance_id,)).fetchone()
+            if nxt:
+                db.execute("UPDATE alliance_regions SET is_default=1 WHERE alliance_id=? AND kid=?",
+                           (self.mgr_view.alliance_id, nxt[0]))
+        db.commit()
+        await self.mgr_view.refresh(interaction)
+
+
+class RegionManageView(discord.ui.View):
+    """Add/remove/set-default regions for one alliance, self-refreshing."""
+
+    def __init__(self, alliance_id, alliance_name):
+        super().__init__(timeout=300)
+        self.alliance_id = alliance_id
+        self.alliance_name = alliance_name
+        self._sync()
+
+    def _sync(self):
+        self.clear_items()
+        self.add_item(_AddRegionButton(self))
+        regs = get_regions(self.alliance_id)
+        if regs:
+            self.add_item(_DefaultSelect(self, regs))
+            self.add_item(_RemoveSelect(self, regs))
+
+    def embed(self):
+        regs = get_regions(self.alliance_id)
+        lines = "\n".join(f"{'⭐' if d else '•'} `{k}`" + ("  (default)" if d else "") for k, d in regs) or "— none yet —"
+        return build_embed(f"🌍 Regions — {self.alliance_name}", {"Kingdoms": lines},
+                           footer="⭐ default pre-fills the region when adding members")
+
+    async def refresh(self, interaction: discord.Interaction):
+        self._sync()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+
 class Regions(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
