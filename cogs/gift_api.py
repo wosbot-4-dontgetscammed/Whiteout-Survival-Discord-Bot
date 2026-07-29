@@ -5,6 +5,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import re
 from datetime import datetime
 
 import ddddocr
@@ -201,25 +202,34 @@ class GiftCodeClaimer:
 
             if not kid:
                 logger.warning("No kid stored for %s - cannot redeem (kingdom id required by API)", player_id)
-                return "ERROR"
+                return "NO_KID"
 
             timeout = aiohttp.ClientTimeout(total=30)
             async with aiohttp.ClientSession(connector=self._get_connector(), connector_owner=False, timeout=timeout) as session:
-                data_to_encode = {
-                    "fid": f"{player_id}",
-                    "cdk": giftcode,
-                    "kid": f"{kid}",
-                    "time": f"{int(datetime.now().timestamp())}",
-                }
-                data = self.encode_data(data_to_encode)
+                response_json = None
+                for attempt in range(3):
+                    data = self.encode_data({
+                        "fid": f"{player_id}",
+                        "cdk": giftcode,
+                        "kid": f"{kid}",
+                        "time": f"{int(datetime.now().timestamp())}",
+                    })
+                    async with session.post(self.wos_giftcode_url, headers=self._api_headers, data=data) as response:
+                        try:
+                            response_json = await response.json(content_type=None)
+                        except (json.JSONDecodeError, ValueError):
+                            text = await response.text()
+                            logger.warning("[GiftAPI] Invalid JSON from gift code API: %s", text[:200])
+                            return "ERROR_INVALID_JSON"
 
-                async with session.post(self.wos_giftcode_url, headers=self._api_headers, data=data) as response:
-                    try:
-                        response_json = await response.json(content_type=None)
-                    except (json.JSONDecodeError, ValueError):
-                        text = await response.text()
-                        logger.warning("[GiftAPI] Invalid JSON from gift code API: %s", text[:200])
-                        return "ERROR"
+                    # 40019 = CenturyGame's per-FID throttle (this player redeemed
+                    # too frequently). Transient — wait 5s and retry. Must NEVER be
+                    # conflated with 40020/KID_MISMATCH.
+                    if response_json.get("err_code") == 40019 and attempt < 2:
+                        logger.debug("[GiftAPI] per-FID throttle (40019) for %s - waiting 5s", player_id)
+                        await asyncio.sleep(5)
+                        continue
+                    break
 
                 logger.debug("API REQUEST - Gift Code | Player ID: %s | kid: %s | Gift Code: %s | Response: %s",
                              player_id, kid, giftcode, json.dumps(response_json, indent=2))
@@ -243,6 +253,12 @@ class GiftCodeClaimer:
                     status = "USAGE_LIMIT"
                 elif msg == "STOVE_LV ERROR." and err_code == 40006:
                     status = "STOVE_LV_ERROR"
+                elif err_code == 40010:
+                    status = "SPEND_MORE"        # player level/spend too low for this code
+                elif err_code == 40019:
+                    status = "RATE_LIMITED"      # per-FID throttle (retries exhausted)
+                elif err_code == 40001:
+                    status = "ROLE_NOT_EXIST"    # legacy captcha flow only
                 elif err_code == 40020:
                     # USER INFO ERROR - upstream could not resolve this fid/kid.
                     # Transient during the 2026-07 backend migration; retryable.
@@ -256,7 +272,11 @@ class GiftCodeClaimer:
                     # unresolvable members (wrong kid / gone) and flag them.
                     status = "USER_INFO_ERROR"
                 else:
-                    status = "ERROR"
+                    # Surface the real API reason instead of a bare "ERROR"
+                    # (e.g. captcha errors, unknown codes) so failure reports
+                    # are diagnostic. Format: ERROR_<code>_<MSG>.
+                    msg_slug = re.sub(r'[^A-Z0-9]+', '_', (msg or 'UNKNOWN').upper()).strip('_')
+                    status = f"ERROR_{err_code}_{msg_slug}" if err_code else f"ERROR_{msg_slug}"
 
                 if player_id != WOS_TEST_PLAYER_ID and status in ["SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE", "STOVE_LV_ERROR"]:
                     try:
@@ -273,4 +293,4 @@ class GiftCodeClaimer:
 
         except Exception as e:
             logger.error("ERROR in claim_giftcode_rewards_wos: %s", e, exc_info=True)
-            return "ERROR"
+            return f"ERROR_{type(e).__name__}"

@@ -47,7 +47,7 @@ class RetryFailedView(discord.ui.View):
                     status = await self.claimer.claim_giftcode_rewards_wos(player_id, self.giftcode)
                 except Exception as e:
                     logger.error("Retry claim error for %s (%s): %s", nickname, player_id, e)
-                    status = "ERROR"
+                    status = f"ERROR_{type(e).__name__}"
 
                 if status in ["SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE"]:
                     retry_success.append(nickname)

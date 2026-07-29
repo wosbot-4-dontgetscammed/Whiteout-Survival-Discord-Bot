@@ -65,7 +65,7 @@ class GiftDistributor:
 
                     await asyncio.sleep(2)
                 except Exception as e:
-                    results[code] = "ERROR"
+                    results[code] = f"ERROR_{type(e).__name__}"
                     logger.error(f"DISTRIBUTE_PENDING ERROR - Player {player_id}, Code {code}: {e}")
 
         except Exception as e:

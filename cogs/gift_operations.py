@@ -253,7 +253,7 @@ class GiftOperations(commands.Cog):
                             await asyncio.sleep(2)
                         except Exception as e:
                             logger.error("[RETRY] Error for %s (%s), code %s: %s", nickname, fid, giftcode, e)
-                            failed_details.append((nickname, "ERROR"))
+                            failed_details.append((nickname, f"ERROR_{type(e).__name__}"))
                             await asyncio.sleep(2)
 
                     # Evaluate persistently-unreachable members only when upstream
