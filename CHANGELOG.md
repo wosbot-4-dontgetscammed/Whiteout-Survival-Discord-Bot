@@ -43,6 +43,11 @@ The game's own player endpoint stayed dead, so profile data now comes from the
 - Gift-code state repair (`cogs/gift_api.py`) asks WoS Atlas for a member's real `kid`
   after a `40020 USER INFO ERROR` before falling back to kingdom probing.
 
+**Changed**
+- The alliance member check remembers when it last ran (`control_last_run`), so a restart
+  no longer triggers an immediate full re-check; the alliance waits out the remainder of
+  its interval. Default interval raised to 6 hours.
+
 **Fixed**
 - **Kingdom oracle false positives.** `resolve_kingdom()` treated *any* response that was
   not `40020` as proof that a kingdom was correct — including unreadable bodies, where a

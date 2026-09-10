@@ -111,6 +111,14 @@ changes seen in the first full sync were independently confirmed correct.
 Unnamed accounts are reported by the Atlas as `Lord<fid>`; those never overwrite a real
 nickname. Members the Atlas has never indexed are counted and skipped, never blanked.
 
+### Check interval
+
+The member check runs per alliance on the interval stored in `alliancesettings`
+(currently 6 hours — the Atlas re-scans a State only a few times a day, so checking more
+often just spends requests). The schedule is persisted: after a restart an alliance that
+was checked recently waits out the remainder of its interval instead of re-running
+immediately.
+
 ### Request queues
 
 All upstream traffic goes through one shared queue per host (`cogs/api_queue.py`), so the

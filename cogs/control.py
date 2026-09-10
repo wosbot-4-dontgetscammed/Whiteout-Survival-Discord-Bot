@@ -39,6 +39,13 @@ class Control(commands.Cog):
             )
         """)
 
+        cursor_settings.execute("""
+            CREATE TABLE IF NOT EXISTS control_last_run (
+                alliance_id INTEGER PRIMARY KEY,
+                last_run TEXT
+            )
+        """)
+
         cursor_settings.execute("SELECT COUNT(*) FROM auto")
         row = cursor_settings.fetchone()
         if row and row[0] == 0:
@@ -75,6 +82,35 @@ class Control(commands.Cog):
             with open('proxy.txt', 'r') as f:
                 proxies = [f"socks4://{line.strip()}" for line in f if line.strip()]
         return proxies
+
+    def _last_run(self, alliance_id):
+        """When this alliance was last checked, or None."""
+        row = self.conn_settings.execute(
+            "SELECT last_run FROM control_last_run WHERE alliance_id = ?", (alliance_id,)
+        ).fetchone()
+        if not row or not row[0]:
+            return None
+        try:
+            return datetime.fromisoformat(row[0])
+        except ValueError:
+            return None
+
+    def _mark_run(self, alliance_id):
+        now = datetime.now().isoformat()
+        self.conn_settings.execute(
+            "INSERT INTO control_last_run (alliance_id, last_run) VALUES (?, ?) "
+            "ON CONFLICT(alliance_id) DO UPDATE SET last_run = ?",
+            (alliance_id, now, now),
+        )
+        self.conn_settings.commit()
+
+    def _due_in(self, alliance_id, interval_minutes):
+        """Minutes until this alliance is due; 0 if it is due now."""
+        last = self._last_run(alliance_id)
+        if last is None:
+            return 0
+        elapsed = (datetime.now() - last).total_seconds() / 60
+        return max(0, interval_minutes - elapsed)
 
     async def fetch_user_data(self, fid, proxy=None, force=False):
         return await fetch_player_info(fid, proxy=proxy, force=force)
@@ -350,6 +386,7 @@ class Control(commands.Cog):
 
         if message:
             await message.edit(embed=embed)
+        self._mark_run(alliance_id)
         logger.info(f"{alliance_name} Alliance Control completed at {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"{alliance_name} Alliance Total Duration: {duration}")
 
@@ -440,9 +477,10 @@ class Control(commands.Cog):
                 if not is_manual:
                     await asyncio.sleep(60)
 
-    async def schedule_alliance_check(self, channel, alliance_id, current_interval):
+    async def schedule_alliance_check(self, channel, alliance_id, current_interval,
+                                      first_delay=None):
         try:
-            await asyncio.sleep(current_interval * 60)
+            await asyncio.sleep((first_delay if first_delay is not None else current_interval) * 60)
             
             while self.is_running.get(alliance_id, False):
                 try:
@@ -520,17 +558,30 @@ class Control(commands.Cog):
                 for alliance_id, channel_id, interval in alliances:
                     channel = self.bot.get_channel(channel_id)
                     if channel is not None:
-                        logger.info(f"Starting initial check for alliance {alliance_id}")
-                        await self.control_queue.put({
-                            'channel': channel,
-                            'alliance_id': alliance_id
-                        })
-                        
+                        # A restart must not reset the schedule: only check now
+                        # if the alliance is actually due, otherwise wait out the
+                        # remainder of its interval.
+                        due_in = self._due_in(alliance_id, interval)
+                        if due_in <= 0:
+                            logger.info(f"Starting initial check for alliance {alliance_id}")
+                            await self.control_queue.put({
+                                'channel': channel,
+                                'alliance_id': alliance_id
+                            })
+                            first_delay = interval
+                        else:
+                            logger.info(
+                                "Alliance %s checked recently - next check in %.0f min",
+                                alliance_id, due_in,
+                            )
+                            first_delay = due_in
+
                         self.is_running[alliance_id] = True
                         self.alliance_tasks[alliance_id] = asyncio.create_task(
-                            self.schedule_alliance_check(channel, alliance_id, interval)
+                            self.schedule_alliance_check(channel, alliance_id, interval,
+                                                         first_delay=first_delay)
                         )
-                        
+
                         await asyncio.sleep(2)
                     else:
                         logger.warning(f"Channel not found for alliance {alliance_id}")
