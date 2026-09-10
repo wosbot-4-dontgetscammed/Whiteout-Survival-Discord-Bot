@@ -1084,8 +1084,13 @@ class AllianceMemberOperations(commands.Cog):
             inline=False
         )
         embed.add_field(
-            name=f"⚠️ Already Exists (0/{total_users})", 
-            value="-", 
+            name=f"⚠️ Already Exists (0/{total_users})",
+            value="-",
+            inline=False
+        )
+        embed.add_field(
+            name=f"🌍 Region Updated (0/{total_users})",
+            value="-",
             inline=False
         )
 
@@ -1093,41 +1098,81 @@ class AllianceMemberOperations(commands.Cog):
         message = await interaction.original_response()
 
         added_count = 0
-        error_count = 0 
+        error_count = 0
         already_exists_count = 0
         added_users = []
         error_users = []
         already_exists_users = []
+        region_updated_users = []
 
         try:
             logger.info("ADD_MEMBERS admin=%s alliance=%s(%s) fids=%s count=%d",
                         interaction.user.id, alliance_name, alliance_id, ids, total_users)
 
-            # Candidate kingdoms for auto-detecting a FID's region via the
-            # gift-code oracle (used only when no region was supplied). Try the
-            # kingdoms this alliance's existing members live in first (most
-            # common first), then any other known kingdom.
-            try:
-                common_kids = [str(r[0]) for r in self.conn_users.execute(
-                    "SELECT kid FROM users WHERE alliance=? AND kid IS NOT NULL AND kid!='' "
-                    "GROUP BY kid ORDER BY COUNT(*) DESC", (alliance_id,)).fetchall()]
-                all_kids = [str(r[0]) for r in self.conn_users.execute(
-                    "SELECT DISTINCT kid FROM users WHERE kid IS NOT NULL AND kid!=''").fetchall()]
-            except Exception as e:
-                logger.warning("Could not build kid candidate list: %s", e)
-                common_kids, all_kids = [], []
-            try:
-                from .regions import get_regions
-                configured_kids = [k for k, _ in get_regions(alliance_id)]
-            except Exception:
-                configured_kids = []
-            auto_candidates = list(dict.fromkeys([*configured_kids, *common_kids, *all_kids]))
+            # Kingdom (region) handling: a supplied region is never trusted
+            # blindly — it is verified against the gift-code oracle, and on a
+            # mismatch the alliance's other regions are tried. A wrong region
+            # is invisible here but breaks every later gift-code redemption
+            # for that member (err_code 40020), so it is fixed at add time.
+            from .regions import candidate_kids, verify_member_kid, add_region_if_missing
 
             index = 0
             while index < len(ids_list):
                 fid = ids_list[index]
                 try:
                     embed.description = f"Processing {total_users} members...\n\n**Progress:** `{index + 1}/{total_users}`"
+
+                    # Known member: re-adding must not be a no-op. Verify the
+                    # stored region (and correct it from the supplied one or the
+                    # alliance's regions), then skip the add path entirely — no
+                    # player lookup needed and the member's alliance is left
+                    # untouched, so a re-add can never poach him.
+                    existing = self.conn_users.execute(
+                        "SELECT nickname, kid, alliance FROM users WHERE fid=?", (fid,)).fetchone()
+                    if existing:
+                        old_nick, old_kid, old_alliance = existing[0], existing[1], existing[2]
+                        if str(old_alliance) != str(alliance_id):
+                            logger.info("Member %s (FID %s) already exists in alliance %s - kept there",
+                                        old_nick, fid, old_alliance)
+                        new_kid, kid_changed = await verify_member_kid(
+                            fid, old_alliance if old_alliance not in (None, "") else alliance_id,
+                            preferred=kid_map.get(fid), stored=old_kid)
+
+                        label = old_nick or fid
+                        if kid_changed:
+                            logger.info("Member already exists: %s (FID: %s) - region %s -> %s",
+                                        old_nick, fid, old_kid or "unset", new_kid)
+                            region_updated_users.append((fid, f"{label} ({old_kid or '?'}→{new_kid})"))
+                            label = f"{label} 🌍{new_kid}"
+                        elif new_kid is None:
+                            logger.warning("Member already exists: %s (FID: %s) - no region matched, kept %s",
+                                           old_nick, fid, old_kid or "unset")
+                            label = f"{label} ⚠️region?"
+                        else:
+                            logger.info("Member already exists: %s (FID: %s) - region %s confirmed",
+                                        old_nick, fid, new_kid)
+
+                        already_exists_count += 1
+                        already_exists_users.append((fid, label))
+                        embed.set_field_at(
+                            2,
+                            name=f"⚠️ Already Exists ({already_exists_count}/{total_users})",
+                            value="Existing user list cannot be displayed due to exceeding 70 users"
+                            if len(already_exists_users) > 70
+                            else ", ".join([n for _, n in already_exists_users]) or "-",
+                            inline=False
+                        )
+                        embed.set_field_at(
+                            3,
+                            name=f"🌍 Region Updated ({len(region_updated_users)}/{total_users})",
+                            value="Update list cannot be displayed due to exceeding 70 users"
+                            if len(region_updated_users) > 70
+                            else ", ".join([n for _, n in region_updated_users]) or "-",
+                            inline=False
+                        )
+                        await message.edit(embed=embed)
+                        index += 1
+                        continue
 
                     data = await fetch_player_info(fid)
 
@@ -1150,12 +1195,26 @@ class AllianceMemberOperations(commands.Cog):
                     # If the endpoint ever returns, real data is used instead and
                     # this branch is skipped automatically.
                     if not (isinstance(data, dict) and data.get('data')):
-                        pkid = kid_map.get(fid)
-                        if not pkid and auto_candidates:
-                            # No region supplied - auto-detect it via the oracle.
-                            pkid = await resolve_kingdom(fid, auto_candidates)
-                            if pkid:
-                                logger.info("Auto-detected kingdom kid=%s for FID %s via gift-code oracle", pkid, fid)
+                        supplied = kid_map.get(fid)
+                        # Probe the supplied region first: if it is the right
+                        # one this costs a single request, and if it is wrong
+                        # the alliance's regions are tried instead of storing a
+                        # region that would fail every redemption later on.
+                        pkid = await resolve_kingdom(fid, candidate_kids(alliance_id, preferred=supplied))
+                        if pkid:
+                            if supplied and pkid != str(supplied).strip():
+                                logger.warning("Supplied region %s rejected for FID %s - using verified kingdom %s",
+                                               supplied, fid, pkid)
+                            else:
+                                logger.info("Verified kingdom kid=%s for FID %s via gift-code oracle", pkid, fid)
+                            add_region_if_missing(alliance_id, pkid)
+                        elif supplied:
+                            # Nothing answered — keep the admin's input rather
+                            # than dropping the member; redemption will report
+                            # USER_INFO_ERROR and repair itself later.
+                            pkid = str(supplied).strip()
+                            logger.warning("No kingdom confirmed for FID %s - storing supplied region %s unverified",
+                                           fid, pkid)
                         if pkid:
                             logger.info("Player API unavailable for FID %s - adding placeholder with kid=%s", fid, pkid)
                             data = {"data": {
@@ -1224,6 +1283,9 @@ class AllianceMemberOperations(commands.Cog):
                                     )
                                     await message.edit(embed=embed)
                             else:
+                                # Only reachable if the row appeared after the
+                                # pre-check above (which already verified the
+                                # region for known members).
                                 logger.info("Member already exists: %s (FID: %s)", nickname, fid)
                                 already_exists_count += 1
                                 already_exists_users.append((fid, nickname))
@@ -1276,8 +1338,14 @@ class AllianceMemberOperations(commands.Cog):
             )
             
             embed.set_field_at(2, name=f"⚠️ Already Exists ({already_exists_count}/{total_users})",
-                value="Existing user list cannot be displayed due to exceeding 70 users" if len(already_exists_users) > 70 
+                value="Existing user list cannot be displayed due to exceeding 70 users" if len(already_exists_users) > 70
                 else ", ".join([nickname for _, nickname in already_exists_users]) or "-",
+                inline=False
+            )
+
+            embed.set_field_at(3, name=f"🌍 Region Updated ({len(region_updated_users)}/{total_users})",
+                value="Update list cannot be displayed due to exceeding 70 users" if len(region_updated_users) > 70
+                else ", ".join([label for _, label in region_updated_users]) or "-",
                 inline=False
             )
 
@@ -1303,7 +1371,8 @@ class AllianceMemberOperations(commands.Cog):
                             f"**Results:**\n"
                             f"✅ Successfully Added: {added_count}\n"
                             f"❌ Failed: {error_count}\n"
-                            f"⚠️ Already Exists: {already_exists_count}\n\n"
+                            f"⚠️ Already Exists: {already_exists_count}\n"
+                            f"🌍 Region Updated: {len(region_updated_users)}\n\n"
                             "**Added FIDs:**\n"
                             f"```\n{','.join(ids_list)}\n```"
                         ),
@@ -1321,7 +1390,8 @@ class AllianceMemberOperations(commands.Cog):
             except Exception as e:
                 logger.error("Log record error: %s", e)
 
-            logger.info("ADD_MEMBERS results: added=%d failed=%d exists=%d", added_count, error_count, already_exists_count)
+            logger.info("ADD_MEMBERS results: added=%d failed=%d exists=%d regions_updated=%d",
+                        added_count, error_count, already_exists_count, len(region_updated_users))
 
         except Exception as e:
             logger.exception("Critical error in add members: %s", e)

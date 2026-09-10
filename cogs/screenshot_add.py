@@ -72,14 +72,23 @@ class ScreenshotEditModal(discord.ui.Modal):
             await interaction.followup.send(f"FID {fid} is already registered.", ephemeral=True)
             return
 
-        if not kid:
-            common = [str(r[0]) for r in users_db.execute(
-                "SELECT kid FROM users WHERE alliance=? AND kid IS NOT NULL AND kid!='' "
-                "GROUP BY kid ORDER BY COUNT(*) DESC", (self.alliance_id,)).fetchall()]
-            allk = [str(r[0]) for r in users_db.execute(
-                "SELECT DISTINCT kid FROM users WHERE kid IS NOT NULL AND kid!=''").fetchall()]
-            cand = list(dict.fromkeys([*common, *allk]))
-            kid = await resolve_kingdom(fid, cand) if cand else None
+        # Verify the region against the gift-code oracle instead of trusting
+        # the OCR/typed value — the region entered here is tried first, then the
+        # alliance's other regions. A wrong region is invisible now but breaks
+        # every gift-code redemption for this member later (err_code 40020).
+        from .regions import candidate_kids, add_region_if_missing
+        typed_kid = kid
+        kid = await resolve_kingdom(fid, candidate_kids(self.alliance_id, preferred=typed_kid))
+        if kid:
+            if typed_kid and kid != typed_kid:
+                logger.warning("SCREENSHOT_ADD region %s rejected for fid=%s - using verified kingdom %s",
+                               typed_kid, fid, kid)
+            add_region_if_missing(self.alliance_id, kid)
+        elif typed_kid:
+            # Nothing answered - keep the entered region rather than refusing
+            # the add; redemption will re-probe and repair it later.
+            kid = typed_kid
+            logger.warning("SCREENSHOT_ADD no kingdom confirmed for fid=%s - storing %s unverified", fid, kid)
 
         if not kid:
             await interaction.followup.send(

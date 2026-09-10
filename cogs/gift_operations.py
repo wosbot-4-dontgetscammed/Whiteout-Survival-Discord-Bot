@@ -1,14 +1,14 @@
 import asyncio
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import discord
 from discord.ext import commands, tasks
 
 from .config import WOS_TEST_PLAYER_ID
 from .database import DatabaseManager
-from .gift_api import GiftCodeClaimer
+from .gift_api import GiftCodeClaimer, RECHECK_STATUSES, RECHECK_AFTER_HOURS
 from .gift_distribution import GiftDistributor
 from .gift_operationsapi import GiftCodeAPI
 from .gift_ui import GiftUI
@@ -54,6 +54,14 @@ class GiftOperations(commands.Cog):
             )
         """)
         self.conn.commit()
+
+        # When a redemption result was stored — lets the retry loop re-check
+        # recharge/VIP-gated members once a day instead of never or endlessly.
+        try:
+            self.conn.execute("ALTER TABLE user_giftcodes ADD COLUMN updated_at TEXT")
+            self.conn.commit()
+        except Exception:
+            pass  # column already exists
 
         # Inactive-member tracking: columns for skipping persistently
         # unresolvable members (moved to an untracked kingdom / gone).
@@ -111,16 +119,8 @@ class GiftOperations(commands.Cog):
         If they now resolve in another of our kingdoms, auto-fix their kid;
         if they resolve nowhere, flag them inactive so we stop retrying."""
         users = DatabaseManager.instance().get("users")
-        try:
-            common = [str(r[0]) for r in users.execute(
-                "SELECT kid FROM users WHERE alliance=? AND kid IS NOT NULL AND kid!='' "
-                "GROUP BY kid ORDER BY COUNT(*) DESC", (str(alliance_id),)).fetchall()]
-            allk = [str(r[0]) for r in users.execute(
-                "SELECT DISTINCT kid FROM users WHERE kid IS NOT NULL AND kid!=''").fetchall()]
-        except Exception as e:
-            logger.debug("kid candidate query failed: %s", e)
-            common, allk = [], []
-        candidates = list(dict.fromkeys([*common, *allk]))
+        from .regions import candidate_kids
+        candidates = candidate_kids(alliance_id)
 
         for fid in fids:
             row = users.execute(
@@ -200,19 +200,29 @@ class GiftOperations(commands.Cog):
                     if not members:
                         continue
 
-                    # Find members who haven't redeemed this code yet
+                    # Find members who haven't redeemed this code yet. A stored
+                    # result settles a member — except a recharge/VIP block,
+                    # which is re-checked once a day in case they meanwhile
+                    # qualify (and must bypass the claimer's result cache).
                     placeholders = ','.join('?' * len(members))
                     cursor = self.conn.execute(f"""
-                        SELECT fid FROM user_giftcodes
+                        SELECT fid, status, updated_at FROM user_giftcodes
                         WHERE giftcode = ? AND fid IN ({placeholders})
                     """, (giftcode, *members))
-                    redeemed_fids = {row[0] for row in cursor.fetchall()}
+                    cutoff = (datetime.now() - timedelta(hours=RECHECK_AFTER_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+                    settled_fids, recheck_fids = set(), set()
+                    for fid, status, updated_at in cursor.fetchall():
+                        if status in RECHECK_STATUSES and (updated_at or "") < cutoff:
+                            recheck_fids.add(fid)
+                        else:
+                            settled_fids.add(fid)
 
-                    missing = [fid for fid in members if fid not in redeemed_fids]
+                    missing = [fid for fid in members if fid not in settled_fids]
                     if not missing:
                         continue
 
-                    logger.info(f"[RETRY] {giftcode}: {len(missing)} members missing in alliance {alliance_id}, retrying...")
+                    logger.info("[RETRY] %s: %d members missing in alliance %s (%d recharge re-checks), retrying...",
+                                giftcode, len(missing), alliance_id, len(recheck_fids))
 
                     retried_success = 0
                     failed_details = []  # (nickname, reason)
@@ -231,7 +241,8 @@ class GiftOperations(commands.Cog):
                     for fid in missing:
                         nickname = fid_names.get(fid, str(fid))
                         try:
-                            result = await self.claimer.claim_giftcode_rewards_wos(fid, giftcode)
+                            result = await self.claimer.claim_giftcode_rewards_wos(
+                                fid, giftcode, force=fid in recheck_fids)
 
                             if result in ("USAGE_LIMIT", "TIME_ERROR", "CDK_NOT_FOUND"):
                                 code_dead = True
@@ -240,6 +251,12 @@ class GiftOperations(commands.Cog):
                             if result in ("SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE"):
                                 retried_success += 1
                                 self._reset_resolve_state(fid)
+                            elif result in RECHECK_STATUSES:
+                                # Code needs a recharge/VIP tier this member does
+                                # not have — not a failure, and cached by the
+                                # claimer, so it costs one call per day, not one
+                                # per cycle. Logged by the common line below.
+                                pass
                             elif result == "STOVE_LV_ERROR":
                                 logger.info("[RETRY] %s - %s (%s) - skipped (furnace level too low)", giftcode, nickname, fid)
                             elif result == "USER_INFO_ERROR":

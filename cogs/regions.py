@@ -84,6 +84,90 @@ def get_regions(alliance_id) -> list:
         return []
 
 
+def candidate_kids(alliance_id, *, preferred=None, stored=None) -> list:
+    """Ordered kingdom candidates for the gift-code oracle.
+
+    Most likely first: the region an admin supplied, then the one we already
+    store for the member, then the alliance's configured regions, the kingdoms
+    its members actually live in, and finally any kingdom we know of.
+    """
+    common, known = [], []
+    try:
+        udb = DatabaseManager.instance().get("users")
+        common = [str(r[0]) for r in udb.execute(
+            "SELECT kid FROM users WHERE alliance=? AND kid IS NOT NULL AND kid!='' "
+            "GROUP BY kid ORDER BY COUNT(*) DESC", (str(alliance_id),)).fetchall()]
+        known = [str(r[0]) for r in udb.execute(
+            "SELECT DISTINCT kid FROM users WHERE kid IS NOT NULL AND kid!=''").fetchall()]
+    except Exception as e:
+        logger.warning("kid candidate lookup failed: %s", e)
+    configured = [k for k, _ in get_regions(alliance_id)]
+    ordered = [preferred, stored, *configured, *common, *known]
+    return list(dict.fromkeys(
+        [_norm_region(str(k)) for k in ordered if k not in (None, "")] ))
+
+
+def add_region_if_missing(alliance_id, kid) -> bool:
+    """Register a kingdom on an alliance if it is not listed yet."""
+    kid = _norm_region(str(kid))
+    if not kid:
+        return False
+    try:
+        db = _db()
+        if db.execute("SELECT 1 FROM alliance_regions WHERE alliance_id=? AND kid=?",
+                      (alliance_id, kid)).fetchone():
+            return False
+        count = db.execute("SELECT COUNT(*) FROM alliance_regions WHERE alliance_id=?",
+                           (alliance_id,)).fetchone()[0]
+        db.execute("INSERT OR IGNORE INTO alliance_regions (alliance_id, kid, is_default) VALUES (?,?,?)",
+                   (alliance_id, kid, 1 if count == 0 else 0))
+        db.commit()
+        logger.info("Region %s auto-added to alliance %s (discovered via oracle)", kid, alliance_id)
+        return True
+    except Exception as e:
+        logger.warning("Could not auto-add region %s to alliance %s: %s", kid, alliance_id, e)
+        return False
+
+
+async def verify_member_kid(fid, alliance_id, *, preferred=None, stored=None, persist=True):
+    """Determine the kingdom a FID really lives in and keep our data in sync.
+
+    Probes candidates with the gift-code oracle (wos_api.resolve_kingdom): the
+    first kingdom the API accepts for this FID is the real one. A supplied or
+    stored region is therefore *verified*, not trusted — a wrong one silently
+    breaks every gift-code redemption for that member (err_code 40020). On a
+    match the kid is written back to users.kid and registered on the alliance
+    if it was unknown.
+
+    Returns (kid, changed); kid is None when no candidate matched.
+    """
+    from .wos_api import resolve_kingdom
+
+    stored = None if stored in (None, "") else _norm_region(str(stored))
+    candidates = candidate_kids(alliance_id, preferred=preferred, stored=stored)
+    if not candidates:
+        return None, False
+
+    kid = await resolve_kingdom(fid, candidates)
+    if not kid:
+        logger.warning("No kingdom matched FID %s (tried %s)", fid, ",".join(candidates[:8]))
+        return None, False
+
+    changed = kid != stored
+    if changed and persist:
+        try:
+            udb = DatabaseManager.instance().get("users")
+            udb.execute("UPDATE users SET kid=? WHERE fid=?", (kid, fid))
+            udb.commit()
+            logger.info("Region corrected for FID %s: %s -> %s", fid, stored or "unset", kid)
+        except Exception as e:
+            logger.error("Could not store kid %s for FID %s: %s", kid, fid, e)
+            return kid, False
+    if persist:
+        add_region_if_missing(alliance_id, kid)
+    return kid, changed
+
+
 async def _alliance_autocomplete(interaction: discord.Interaction, current: str):
     try:
         rows = _db().execute("SELECT alliance_id, name FROM alliance_list").fetchall()

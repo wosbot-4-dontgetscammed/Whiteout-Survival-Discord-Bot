@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import discord
 
 from .config import WOS_TEST_PLAYER_ID
+from .gift_api import RECHECK_STATUSES
 from .database import DatabaseManager
 from .log_config import get_logger
 from .utils import build_embed
@@ -126,6 +127,7 @@ class GiftDistributor:
             successful_users = []
             already_used_users = []
             failed_users = []
+            ineligible_users = []   # recharge/VIP-gated - not a failure, not retryable now
 
             cursor = alliance_conn.execute(
                 "SELECT channel_id FROM alliancesettings WHERE alliance_id = ?",
@@ -211,8 +213,11 @@ class GiftDistributor:
             """, (giftcode, *member_ids))
             previous_users = {row[0]: row[1] for row in cursor.fetchall()}
 
-            received = len(previous_users)
-            processed = received
+            # A stored recharge/VIP block is not a redemption — count it apart
+            # so the report does not claim those members already got the code.
+            previously_ineligible = {f for f, s in previous_users.items() if s in RECHECK_STATUSES}
+            received = len(previous_users) - len(previously_ineligible)
+            processed = len(previous_users)
 
             embed = build_embed("Auto Gift Code Progress", {
                 "Alliance": alliance_name,
@@ -244,7 +249,10 @@ class GiftDistributor:
                     nickname = row[0] if row else "Unknown"
 
                     if player_id in previous_users:
-                        already_used_users.append(nickname)
+                        if player_id in previously_ineligible:
+                            ineligible_users.append(nickname)
+                        else:
+                            already_used_users.append(nickname)
                         continue
 
                     response_status = await self.claimer.claim_giftcode_rewards_wos(player_id, giftcode)
@@ -275,6 +283,12 @@ class GiftDistributor:
                             conn.commit()
                         except sqlite3.IntegrityError:
                             logger.debug("Duplicate giftcode record for fid=%s code=%s, skipping", player_id, giftcode)
+                    elif response_status in RECHECK_STATUSES:
+                        # Code demands a recharge/VIP tier this member lacks.
+                        # Already cached by the claimer; the retry loop looks at
+                        # them again once a day.
+                        processed += 1
+                        ineligible_users.append(nickname)
                     elif response_status == "TIMEOUT_RETRY":
                         timeout_retry_users.append((player_id, nickname))
                     else:
@@ -389,6 +403,7 @@ class GiftDistributor:
                 log_file.write(f"Total Members: {total_members}\n")
                 log_file.write(f"Successful: {success}\n")
                 log_file.write(f"Already Used: {received}\n")
+                log_file.write(f"Not Eligible (recharge/VIP): {len(ineligible_users)}\n")
                 log_file.write(f"Failed: {failed}\n\n")
 
                 log_file.write(f"Successful Users ({len(successful_users)})\n")
@@ -412,7 +427,7 @@ class GiftDistributor:
             if failed_users:
                 failed_list = "\n**Failed Users:**\n" + "\n".join(f"  - `{name}`" for _, name in failed_users) + "\n"
 
-            embed = build_embed("Gift Code Process Complete", {
+            summary = {
                 "Alliance": alliance_name,
                 "Gift Code": giftcode,
                 "Total Members": str(total_members),
@@ -420,7 +435,11 @@ class GiftDistributor:
                 "Already Used": str(received),
                 "Failed": str(failed),
                 "Progress": f"{processed}/{total_members}",
-            }, header="Gift Code Distribution Complete", color=discord.Color.green())
+            }
+            if ineligible_users:
+                summary["Not Eligible (recharge/VIP)"] = str(len(ineligible_users))
+            embed = build_embed("Gift Code Process Complete", summary,
+                                header="Gift Code Distribution Complete", color=discord.Color.green())
             if failed_list:
                 # Insert failed user list before the closing separator
                 lines = embed.description.rsplit("\n", 2)

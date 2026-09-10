@@ -171,18 +171,11 @@ class IDChannel(commands.Cog):
                     # added and eligible for gift codes. Real data is used if the
                     # endpoint ever returns.
                     if not (isinstance(data, dict) and data.get('data')):
-                        try:
-                            udb = DatabaseManager.instance().get("users")
-                            common = [str(r[0]) for r in udb.execute(
-                                "SELECT kid FROM users WHERE alliance=? AND kid IS NOT NULL AND kid!='' "
-                                "GROUP BY kid ORDER BY COUNT(*) DESC", (alliance_id,)).fetchall()]
-                            allk = [str(r[0]) for r in udb.execute(
-                                "SELECT DISTINCT kid FROM users WHERE kid IS NOT NULL AND kid!=''").fetchall()]
-                            cand = list(dict.fromkeys([*common, *allk]))
-                        except Exception:
-                            cand = []
+                        from .regions import candidate_kids, add_region_if_missing
+                        cand = candidate_kids(alliance_id)
                         pkid = await resolve_kingdom(fid, cand) if cand else None
                         if pkid:
+                            add_region_if_missing(alliance_id, pkid)
                             logger.info("id_channel: auto-detected kid=%s for FID %s (player API down)", pkid, fid)
                             data = {"data": {"nickname": str(fid), "stove_lv": 0,
                                              "stove_lv_content": None, "kid": pkid,
