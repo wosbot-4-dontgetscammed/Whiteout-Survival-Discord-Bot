@@ -10,6 +10,64 @@ Versions refer to fork milestones, not upstream releases.
 
 ## [Unreleased]
 
+### 2026-09 — WoS Atlas as replacement player-data source
+The game's own player endpoint stayed dead, so profile data now comes from the
+[WoS Atlas](https://wosatlas.com) community index (free account required).
+
+**Added**
+- `cogs/wosatlas_api.py` — authenticated client for `api.wosatlas.com/v1`. Chief-ID
+  lookup returns nickname, furnace level, state, power, alliance tag and coordinates.
+  Serialised requests with a 1.1 s minimum interval (their `robots.txt` asks for
+  `Crawl-delay: 1`), a 30-minute cache and automatic re-login on session expiry.
+- `cogs/wosatlas_sync.py` — `/atlas_sync [alliance]` (admin) refreshes nickname,
+  furnace and state for a roster; `/atlas_lookup <fid>` shows a single live record.
+- `WOSATLAS_EMAIL` / `WOSATLAS_PASSWORD` / `WOSATLAS_USER_AGENT` settings.
+- `cogs/giftcode_report.py` — `/giftcode_report [alliance] [code]` summarises redemptions
+  per alliance and code (redeemed / failed / pending / never attempted);
+  `/giftcode_missing <alliance> <code>` names the members still without a code;
+  a daily digest per alliance channel (`/giftcode_digest` toggles it) — the existing
+  summaries were event-driven only, so quiet days produced no report at all.
+- `cogs/api_queue.py` — one shared, token-bucket request queue per upstream host
+  (`wosatlas` 0.9/s, `centurygame` 3/s). Every caller in the process goes through it, and
+  a rate-limit response pauses the whole queue instead of only the unlucky caller.
+- Rate-limit handling for the Atlas API: 429 is retried using the server's `Retry-After`
+  / `X-RateLimit-Reset`, and the client pauses before its quota (120 requests/60s) runs
+  out. A throttled lookup is never mistaken for "player not found".
+- `is_placeholder_name()` guard — Atlas reports unnamed accounts as `Lord<fid>`, which
+  must never overwrite a real stored nickname.
+
+**Changed**
+- Alliance control (`cogs/control.py`) picks its data source per run: the game's API
+  when alive, WoS Atlas otherwise. Furnace / nickname / state-transfer notifications
+  work again through the existing embeds.
+- Gift-code state repair (`cogs/gift_api.py`) asks WoS Atlas for a member's real `kid`
+  after a `40020 USER INFO ERROR` before falling back to kingdom probing.
+
+**Fixed**
+- **Kingdom oracle false positives.** `resolve_kingdom()` treated *any* response that was
+  not `40020` as proof that a kingdom was correct — including unreadable bodies, where a
+  missing `err_code` defaulted to `0`. A wrong kingdom could therefore be written as fact,
+  breaking every later redemption for that member and causing endless repair loops (one
+  member produced 596 identical repair warnings). Only the error codes upstream returns
+  *after* accepting `fid+kid` now count as confirmation; anything else is inconclusive.
+- Atlas kingdom changes are confirmed against the game before being stored
+  (`wosatlas_api.confirm_kid()`).
+- `claim_giftcode_rewards_wos` crashed with `'int' object has no attribute 'upper'` when
+  upstream returned a non-string `msg`, aborting that member's redemption.
+- The community gift-code sync ran against an empty URL when `GIFTCODE_API_URL` /
+  `GIFTCODE_API_KEY` were unset, producing ~100 errors a day with empty messages for a
+  feature that was never configured. It now disables itself with one clear log line, and
+  the remaining connection errors report the exception type and URL.
+- Repeated `40020` warnings for a member already probed this run are logged at debug.
+- A transient probe failure (429 / network error) no longer counts as "the player-info
+  endpoint is gone", which used to switch every alliance to the fallback source for 6h.
+- Transient WoS Atlas failures are no longer cached as "player has no record".
+- The dead player endpoint is no longer hammered once per alliance interval. A circuit
+  breaker in `cogs/wos_api.py` answers `404` without a request while the endpoint is
+  down, re-probing every 6 hours, and the outage notice is posted once per channel
+  instead of every cycle (previously ~6600 pointless cycles were logged).
+
+
 ### 2026-07 — CenturyGame API change adaptation
 CenturyGame removed the `/api/player` and `/api/captcha` endpoints (~2026-07-21) and made the kingdom id (`kid`) required for gift-code redemption. Changes to keep the fork working:
 - **Gift redemption** rewritten to the new single signed call (`fid`+`cdk`+`kid`+`time`), dropping the dead player-info pre-check and the captcha loop (`cogs/gift_api.py`).

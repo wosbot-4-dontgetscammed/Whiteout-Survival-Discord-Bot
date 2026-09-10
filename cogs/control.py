@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import asyncio
+import time
 from datetime import datetime
 import os
 
@@ -9,10 +10,17 @@ from .config import LEVEL_MAPPING
 from .database import DatabaseManager
 from .log_config import get_logger
 from .wos_api import fetch_player_info
+from . import wosatlas_api
 
 logger = get_logger("control")
 
 level_mapping = LEVEL_MAPPING
+
+# The game removed its /api/player endpoint (2026-07). While it stays down there
+# is nothing for the alliance control to sync, so re-probe it only occasionally
+# instead of once per alliance interval, and announce the outage once per channel
+# instead of every cycle.
+PLAYER_API_RECHECK_SECONDS = 6 * 3600
 
 class Control(commands.Cog):
     def __init__(self, bot):
@@ -43,6 +51,10 @@ class Control(commands.Cog):
         self.is_running = {}
         self.monitor_started = False
         
+        self.player_api_alive = True
+        self.player_api_last_probe = 0.0
+        self.player_api_notified = set()
+
         self.control_queue = asyncio.Queue()
         self.control_lock = asyncio.Lock()
         self.current_control = None
@@ -64,10 +76,10 @@ class Control(commands.Cog):
                 proxies = [f"socks4://{line.strip()}" for line in f if line.strip()]
         return proxies
 
-    async def fetch_user_data(self, fid, proxy=None):
-        return await fetch_player_info(fid, proxy=proxy)
+    async def fetch_user_data(self, fid, proxy=None, force=False):
+        return await fetch_player_info(fid, proxy=proxy, force=force)
 
-    async def check_agslist(self, channel, alliance_id):
+    async def check_agslist(self, channel, alliance_id, force=False):
         async with self.db_lock:
             cursor_users = self.conn_users.cursor()
             cursor_users.execute("SELECT fid, nickname, furnace_lv, stove_lv_content, kid FROM users WHERE alliance = ?", (alliance_id,))
@@ -94,8 +106,66 @@ class Control(commands.Cog):
             cursor.execute("SELECT value FROM auto LIMIT 1")
             result = cursor.fetchone()
             auto_value = result[0] if result else 1
-        
-        
+
+        # Pick the data source for this run. The game's own /api/player was
+        # removed in 2026-07, so it is probed at most once per
+        # PLAYER_API_RECHECK_SECONDS and WoS Atlas serves as the fallback.
+        now = time.monotonic()
+        in_backoff = (not force and not self.player_api_alive
+                      and now - self.player_api_last_probe < PLAYER_API_RECHECK_SECONDS)
+
+        if in_backoff:
+            source = "atlas" if wosatlas_api.available() else None
+            if source is None:
+                logger.debug(
+                    "%s: player-info API still in backoff - skipping control run",
+                    alliance_name,
+                )
+                await self._announce_api_down(channel, alliance_id, auto_value)
+                return
+        else:
+            self.player_api_last_probe = now
+            probe = await self.fetch_user_data(users[0][0], force=True)
+            was_alive = self.player_api_alive
+            # Only a definitive "endpoint gone" verdict may open the fallback.
+            # A 429 or a network blip (None) says nothing about the endpoint, so
+            # the previous verdict stands rather than silently downgrading every
+            # alliance to the lower-fidelity source for six hours.
+            if isinstance(probe, dict) and isinstance(probe.get('data'), dict):
+                self.player_api_alive = True
+            elif probe in (403, 404, 410):
+                self.player_api_alive = False
+            else:
+                logger.info(
+                    "%s: inconclusive player-info probe (%r) - keeping previous verdict (alive=%s)",
+                    alliance_name, probe, was_alive,
+                )
+
+            if self.player_api_alive:
+                source = "game"
+                if not was_alive:
+                    logger.info("%s: player-info API is back - resuming sync", alliance_name)
+                    self.player_api_notified.discard(alliance_id)
+                    if auto_value == 1:
+                        await self.send_embed(
+                            channel,
+                            "▶️ Alliance Control resumed",
+                            "The player-info API is reachable again - member sync is running.",
+                            discord.Color.green(),
+                        )
+            else:
+                if was_alive:
+                    logger.info(
+                        "%s: player-info API unavailable - re-probing in %d hours",
+                        alliance_name, PLAYER_API_RECHECK_SECONDS // 3600,
+                    )
+                source = "atlas" if wosatlas_api.available() else None
+                if source is None:
+                    await self._announce_api_down(channel, alliance_id, auto_value, force=force)
+                    return
+
+        logger.info("%s: syncing members via %s", alliance_name, source)
+
         embed = discord.Embed(
             title=f"🏰 {alliance_name} Alliance Control",
             description="🔍 Checking for changes in member status...",
@@ -119,34 +189,12 @@ class Control(commands.Cog):
 
         furnace_changes, nickname_changes, kid_changes = [], [], []
 
-        # The /api/player endpoint was removed upstream (2026-07), so per-member
-        # furnace/nickname sync can no longer fetch live data. Probe once instead
-        # of hammering the dead endpoint for every member each cycle; skip the
-        # sync loop while it is down. Auto-resumes if the endpoint ever returns.
-        probe = await self.fetch_user_data(users[0][0]) if users else None
-        player_api_alive = isinstance(probe, dict) and isinstance(probe.get('data'), dict)
-        if not player_api_alive:
-            logger.info("%s: player-info API unavailable - skipping furnace/nickname sync this cycle", alliance_name)
-            if message:
-                embed.set_field_at(
-                    1,
-                    name="📈 Progress",
-                    value=("⏸️ Furnace/nickname sync skipped — the game removed its "
-                           "player-info API (2026-07), so live member stats can't be "
-                           "fetched. Membership & gift-code delivery are unaffected."),
-                    inline=False,
-                )
-                try:
-                    await message.edit(embed=embed)
-                except Exception:
-                    pass
-
         i = 0
-        while player_api_alive and i < total_users:
+        while i < total_users:
             batch_users = users[i:i+20]
             for fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid in batch_users:
-                data = await self.fetch_user_data(fid)
-                
+                data = await self.fetch_user_data(fid) if source == "game" else None
+
                 if data == 429 and (not os.path.exists('proxy.txt') or not self.proxies):
                     embed.description = f"⚠️ API Rate Limit! Waiting 60 seconds...\n📊 Progress: {checked_users}/{total_users} members"
                     embed.color = discord.Color.orange()
@@ -161,8 +209,34 @@ class Control(commands.Cog):
                         await message.edit(embed=embed)
                     data = await self.fetch_user_data(fid)
                 
-                if isinstance(data, dict) and isinstance(data.get('data'), dict):
+                if source == "atlas":
+                    snapshot = await wosatlas_api.lookup_fid(fid)
+                    if snapshot and snapshot.get("nickname"):
+                        # Atlas reports unnamed accounts as "Lord<fid>"; that must
+                        # not overwrite a real nickname. Atlas also has no furnace
+                        # artwork URL, so keep the stored one.
+                        atlas_name = snapshot['nickname']
+                        if wosatlas_api.is_placeholder_name(atlas_name, fid):
+                            atlas_name = old_nickname
+                        # A wrong kingdom breaks every later redemption, so a
+                        # change is confirmed against the game before it counts.
+                        atlas_kid = await wosatlas_api.confirm_kid(
+                            fid, snapshot.get('kid'), old_kid
+                        )
+                        user_data = {
+                            'stove_lv': snapshot.get('furnace_lv') or old_furnace_lv,
+                            'nickname': atlas_name,
+                            'kid': atlas_kid or old_kid,
+                            'stove_lv_content': old_stove_lv_content,
+                        }
+                    else:
+                        user_data = None
+                elif isinstance(data, dict) and isinstance(data.get('data'), dict):
                     user_data = data['data']
+                else:
+                    user_data = None
+
+                if user_data:
                     new_furnace_lv = user_data['stove_lv']
                     new_nickname = user_data['nickname'].strip()
                     new_kid = user_data.get('kid', 0)
@@ -279,6 +353,24 @@ class Control(commands.Cog):
         logger.info(f"{alliance_name} Alliance Control completed at {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"{alliance_name} Alliance Total Duration: {duration}")
 
+    async def _announce_api_down(self, channel, alliance_id, auto_value, force=False):
+        """Post the outage notice once per alliance channel (again on manual runs)."""
+        if auto_value != 1 and not force:
+            return
+        if alliance_id in self.player_api_notified and not force:
+            return
+        self.player_api_notified.add(alliance_id)
+        await self.send_embed(
+            channel,
+            "⏸️ Alliance Control paused",
+            ("The game removed its player-info API (2026-07), so furnace, "
+             "nickname and state changes can no longer be fetched.\n\n"
+             f"The bot re-checks every {PLAYER_API_RECHECK_SECONDS // 3600}h "
+             "and resumes automatically if the API comes back. Membership "
+             "management and gift-code delivery are unaffected."),
+            discord.Color.orange(),
+        )
+
     async def send_embed(self, channel, title, description, color):
         embed = discord.Embed(
             title=title,
@@ -318,7 +410,9 @@ class Control(commands.Cog):
                     row = cursor_users.fetchone()
                     member_count = row[0] if row else 0
                 
-                self.current_control = asyncio.create_task(self.check_agslist(channel, alliance_id))
+                self.current_control = asyncio.create_task(
+                    self.check_agslist(channel, alliance_id, force=is_manual)
+                )
                 await self.current_control
                 
                 self.current_control = None

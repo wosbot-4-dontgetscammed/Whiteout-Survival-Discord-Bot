@@ -39,6 +39,20 @@ class GiftCodeAPI:
         self.ssl_context.verify_mode = ssl.CERT_NONE
 
         self._connector = None
+
+        # The community code-sync is optional. Without GIFTCODE_API_URL /
+        # GIFTCODE_API_KEY every request went to an empty URL, failed with an
+        # empty ClientError message and was retried forever - hundreds of
+        # meaningless errors a day for a feature that was never set up.
+        self.enabled = bool(self.api_url and self.api_key)
+        if not self.enabled:
+            logger.info(
+                "Community gift-code sync disabled (set GIFTCODE_API_URL and "
+                "GIFTCODE_API_KEY in .env to enable it); the local scraper is unaffected"
+            )
+            self._api_task = None
+            return
+
         self._api_task = _create_monitored_task(self.start_api_check(), name="api_check_loop")
 
     def cancel(self):
@@ -108,6 +122,8 @@ class GiftCodeAPI:
             return None
 
     async def sync_with_api(self):
+        if not getattr(self, "enabled", True):
+            return False
         try:
             cursor = self.conn.execute("SELECT giftcode, date FROM gift_codes")
             db_codes = {row[0]: row[1] for row in cursor.fetchall()}
@@ -264,11 +280,13 @@ class GiftCodeAPI:
                     return True
 
         except (aiohttp.ClientError, OSError) as e:
-            logger.error(f"Connection error in sync_with_api: {e}")
+            logger.error("Connection error in sync_with_api (%s): %s | url=%s", type(e).__name__, e, self.api_url)
         except Exception as e:
             logger.exception(f"Unexpected error in sync_with_api: {e}")
 
     async def add_giftcode(self, giftcode: str) -> bool:
+        if not getattr(self, "enabled", True):
+            return False
         try:
             cursor = self.conn.execute("SELECT 1 FROM gift_codes WHERE giftcode = ?", (giftcode,))
             already_in_db = cursor.fetchone() is not None
@@ -299,13 +317,15 @@ class GiftCodeAPI:
                         return False
 
         except (aiohttp.ClientError, OSError) as e:
-            logger.error(f"Connection error in add_giftcode: {e}")
+            logger.error("Connection error in add_giftcode (%s): %s | url=%s", type(e).__name__, e, self.api_url)
             return False
         except Exception as e:
             logger.exception(f"Unexpected error in add_giftcode: {e}")
             return False
 
     async def remove_giftcode(self, giftcode: str, from_validation: bool = False) -> bool:
+        if not getattr(self, "enabled", True):
+            return False
         try:
             if not from_validation:
                 return False
@@ -334,7 +354,7 @@ class GiftCodeAPI:
                     else:
                         return False
         except (aiohttp.ClientError, OSError) as e:
-            logger.error(f"Connection error in remove_giftcode: {e}")
+            logger.error("Connection error in remove_giftcode (%s): %s | url=%s", type(e).__name__, e, self.api_url)
             return False
         except Exception as e:
             logger.exception(f"Unexpected error in remove_giftcode: {e}")

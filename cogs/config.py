@@ -21,6 +21,16 @@ WOS_API_HEADERS = {
     "referer": "https://wos-giftcode.centurygame.com/",
 }
 
+# WoS Atlas (https://wosatlas.com) - replacement source for player profile data
+# since CenturyGame removed /api/player. Free account; credentials in .env.
+WOSATLAS_BASE_URL = "https://api.wosatlas.com/v1"
+WOSATLAS_EMAIL = os.getenv("WOSATLAS_EMAIL", "")
+WOSATLAS_PASSWORD = os.getenv("WOSATLAS_PASSWORD", "")
+WOSATLAS_USER_AGENT = os.getenv(
+    "WOSATLAS_USER_AGENT",
+    "wosbot-discord/1.0 (alliance roster sync; +https://github.com/wosbot4freecrew)",
+)
+
 # Test player ID used for gift code validation
 WOS_TEST_PLAYER_ID = os.getenv("WOS_TEST_PLAYER_ID", "244886619")
 

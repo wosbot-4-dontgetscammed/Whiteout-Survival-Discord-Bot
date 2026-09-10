@@ -20,12 +20,119 @@ Around **2026-07-21** CenturyGame changed the Whiteout Survival gift API: the `/
 - **Kingdom auto-detect** — since a FID's kingdom can no longer be looked up, the bot detects it via a side-effect-free gift-code probe when needed.
 - **Per-alliance regions** — manage which kingdoms an alliance spans and set a default (`/region_add|remove|default|list`, or the **🌍 Manage Regions** button in the member menu). The default pre-fills the region when adding members.
 - **Add member / ID-channel** degrade gracefully: they register a placeholder profile + auto-detected kingdom when live data is unavailable.
+- **WoS Atlas player data** — nickname, furnace level and state are read from the
+  [WoS Atlas](https://wosatlas.com) community index instead, so alliance control keeps
+  working. See [the section below](#-wos-atlas-as-the-player-data-source).
 - **Screenshot add** (`/add_screenshot`, macOS) — recover a member's nickname/furnace from a profile screenshot via on-device Apple Vision OCR (offline, no API key). Build the helper with `swiftc -O tools/ocr_vision.swift -o bin/ocr_vision`.
 - **Inactive members** — members that are unresolvable for several cycles (moved to an untracked kingdom / gone) are flagged inactive and skipped, with `/inactive_members` to review and reactivate.
 - **Resilient gift-code scraper** — validates candidates against several resolving players; a dead validator can no longer discard valid codes.
 - **Local backups** — encrypted-or-plain backups now write to `backups/` (the old upload API is defunct).
 
 See [`CHANGELOG.md`](CHANGELOG.md) for detail.
+
+---
+
+# 🛰️ WoS Atlas as the player-data source
+
+Since CenturyGame removed `/api/player`, the game itself offers **no way** to read a
+player's nickname, furnace level or state from a Chief ID. Most other bots gave up on
+those fields and switched to typing them in by hand.
+
+This fork instead reads them from **[WoS Atlas](https://wosatlas.com)**, a community
+project that maintains its own live index of the game world. A **free account** is
+enough — anonymous callers only see a nickname, while a signed-in account also gets
+the FID, furnace level, power, alliance tag and map coordinates.
+
+### Setup
+
+1. Create a free account at <https://wosatlas.com/register/>.
+2. Put the credentials in `.env`:
+   ```ini
+   WOSATLAS_EMAIL=you@example.com
+   WOSATLAS_PASSWORD=your_password
+   ```
+3. Restart the bot. On the next alliance-control cycle the log shows
+   `syncing members via atlas`.
+
+If the variables are missing, the bot simply skips this source and says so in the
+alliance channel — everything else (gift codes, membership, backups) keeps working.
+
+### What it restores
+
+- **Alliance control** — furnace, nickname and state-transfer notifications work again,
+  through the same embeds as before. The bot prefers the game's own API and only falls
+  back to the Atlas while that stays dead; it re-probes every 6 hours and switches back
+  automatically if CenturyGame ever restores the endpoint.
+- **State repair on gift codes** — when redemption fails with `USER INFO ERROR`
+  (`40020`, wrong `kid`), the bot now asks the Atlas for the member's real state,
+  stores it and retries, instead of probing kingdoms one at a time.
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `/atlas_sync [alliance]` | Refresh nickname, furnace level and state for one alliance or all members. Admin only. |
+| `/atlas_lookup <fid>` | Look up a single Chief ID: nickname, furnace, state, power, alliance, coordinates. |
+
+Both are admin-only: every lookup uses the shared, rate-limited Atlas session that the
+alliance control loop and the gift-code state repair also depend on.
+
+---
+
+# 📊 Gift-code reporting per alliance
+
+The bot records every redemption attempt, so it can tell you what an alliance actually
+received rather than just what was sent.
+
+| Command | Description |
+|---|---|
+| `/giftcode_report [alliance] [code]` | Per alliance, per code: how many members redeemed it, how many failed, how many are still pending, plus codes never attempted. Leave `alliance` empty for all alliances. |
+| `/giftcode_missing <alliance> <code>` | Names the members of one alliance who do not have a given code, split into failed attempts and untouched ones. |
+| `/giftcode_digest <alliance> <on/off>` | Turn the **daily summary** for an alliance on or off (on by default). |
+
+A daily digest is posted into each alliance's gift-code channel: how many members
+hold each code, which codes are complete, which are still short. The pre-existing
+summaries only appear on an event — the distribution summary when a new code arrives,
+the retry summary only when a retry actually happened — so a quiet day showed nothing.
+
+Statuses counted as redeemed: `SUCCESS`, `RECEIVED`, `SAME TYPE EXCHANGE`. Anything else
+(e.g. `USER_INFO_ERROR`, `CAPTCHA_FAILED`) is reported as a failure so it can be chased.
+
+
+### How trustworthy is the data?
+
+The Atlas is an **index**, not the game. Nickname and furnace level are taken from it
+directly, but the **kingdom (`kid`) is never trusted blindly**: a wrong `kid` makes every
+later gift-code redemption fail with `40020`, so a proposed state change is confirmed
+against the game's own API (a side-effect-free gift-code probe) before it is stored. If
+the game does not confirm it, the stored value stays and the bot logs why. All 23 state
+changes seen in the first full sync were independently confirmed correct.
+
+Unnamed accounts are reported by the Atlas as `Lord<fid>`; those never overwrite a real
+nickname. Members the Atlas has never indexed are counted and skipped, never blanked.
+
+### Request queues
+
+All upstream traffic goes through one shared queue per host (`cogs/api_queue.py`), so the
+control loop, the slash commands, gift-code redemption and the state repair cannot add up
+to more than one client's worth of requests:
+
+| Queue | Sustained rate | Protects against |
+|---|---|---|
+| `wosatlas` | 0.9 req/s (burst 2) | their 120-per-60s budget → `429` |
+| `centurygame` | 3 req/s (burst 5) | per-FID throttle `40019` and WAF blocks |
+
+A rate-limit response pauses the **whole** queue (honouring `Retry-After`), so one feature
+hitting a limit slows every feature down instead of the rest piling on.
+
+### Being a good guest
+
+WoS Atlas is a free community service. The client is deliberately gentle: **one request
+per 1.1 s** (their `robots.txt` asks for `Crawl-delay: 1`), a 30-minute result cache, and
+a self-identifying `User-Agent`. Do not lower those values — their terms ask that you
+not automate "in a way that degrades it for others", and losing this source would break
+the feature for everyone. Not every player is in their index; unresolved members are
+counted and skipped, never overwritten.
 
 ---
 
@@ -163,6 +270,8 @@ pip install -r requirements.txt
    BOT_TOKEN=your_discord_bot_token_here
    WOS_ENCRYPT_KEY=tB87#kPtkxqOS2
    WOS_TEST_PLAYER_ID=244886619
+   WOSATLAS_EMAIL=your_wosatlas_account_email
+   WOSATLAS_PASSWORD=your_wosatlas_password
    WOSLAND_API_KEY=optional_if_available
    WOSLAND_BACKUP_API_KEY=optional_if_available
    WOSLAND_BACKUP_API_URL=https://wosland.com/apidc/backup_api/backup_api.php
@@ -171,6 +280,9 @@ pip install -r requirements.txt
    - `BOT_TOKEN` is **required** (from step 4).
    - `WOS_ENCRYPT_KEY` is the well-known WOS standard value.
    - `WOS_TEST_PLAYER_ID` is any valid player ID used to test the API.
+   - The `WOSATLAS_*` values are **strongly recommended**: they restore nickname,
+     furnace level and state tracking, which the game's own API can no longer
+     provide. See [WoS Atlas as the player-data source](#-wos-atlas-as-the-player-data-source).
    - The `WOSLAND_*` values are optional and only needed if you use the WOSLand backup feature.
 
 3. **Important:** never share `.env` or commit it to the repository — it holds your secret. The shipped `.gitignore` already protects it.

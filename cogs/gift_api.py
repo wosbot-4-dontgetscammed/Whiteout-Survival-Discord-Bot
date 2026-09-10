@@ -10,6 +10,7 @@ from datetime import datetime
 
 import ddddocr
 
+from .api_queue import game_queue
 from .config import (
     WOS_ENCRYPT_KEY,
     WOS_PLAYER_INFO_URL,
@@ -24,6 +25,17 @@ from .log_config import get_logger
 from .wos_api import _ssl_ctx as _shared_ssl_ctx
 
 logger = get_logger("gift_api")
+
+# Statuses that are final for the moment but can flip later: the player does
+# not (yet) meet the code's recharge/VIP requirement. They are cached like any
+# other terminal status so the retry loop stops hammering the API for them —
+# the retry loop re-checks them once a day (see RECHECK_AFTER_HOURS).
+RECHECK_STATUSES = ("RECHARGE_REQUIRED", "VIP_REQUIRED")
+RECHECK_AFTER_HOURS = 24
+
+# Statuses worth remembering per (fid, code); anything else stays retryable.
+PERSISTED_STATUSES = ("SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE",
+                      "STOVE_LV_ERROR", *RECHECK_STATUSES)
 
 
 class GiftCodeClaimer:
@@ -45,6 +57,11 @@ class GiftCodeClaimer:
         }
 
         self._connector: aiohttp.TCPConnector | None = None
+
+        # FIDs whose stored kingdom was already re-probed after a USER INFO
+        # ERROR this process — one repair attempt each, so a dead FID cannot
+        # turn into an endless probe loop.
+        self._kid_repair_attempted: set = set()
 
     # ------------------------------------------------------------------
     # Connector reuse
@@ -162,11 +179,59 @@ class GiftCodeClaimer:
     # Gift-code redemption
     # ------------------------------------------------------------------
 
-    async def claim_giftcode_rewards_wos(self, player_id, giftcode):
+    async def _repair_kid(self, player_id, current_kid):
+        """Re-detect a member's kingdom after a USER INFO ERROR (40020).
+
+        Probes the member's alliance regions with the gift-code oracle and
+        stores the kingdom that the API accepts. Returns the confirmed kid
+        (unchanged value = the stored region is fine, so the 40020 really was
+        transient) or None when nothing matched / already attempted.
+        """
+        if player_id == WOS_TEST_PLAYER_ID or player_id in self._kid_repair_attempted:
+            return None
+        self._kid_repair_attempted.add(player_id)
+        try:
+            # Fast path: WoS Atlas knows the member's current state outright, so
+            # ask it before falling back to probing kingdoms one by one.
+            from . import wosatlas_api
+            if wosatlas_api.available():
+                snapshot = await wosatlas_api.lookup_fid(player_id, use_cache=False)
+                atlas_kid = snapshot.get("kid") if snapshot else None
+                if atlas_kid:
+                    if str(atlas_kid) != str(current_kid or ""):
+                        users_db = DatabaseManager.instance().get("users")
+                        users_db.execute(
+                            "UPDATE users SET kid = ? WHERE fid = ?", (atlas_kid, player_id)
+                        )
+                        users_db.commit()
+                        logger.info(
+                            "[GiftAPI] state repaired via WoS Atlas for %s: %s -> %s",
+                            player_id, current_kid, atlas_kid,
+                        )
+                    return atlas_kid
+
+            row = DatabaseManager.instance().get("users").execute(
+                "SELECT alliance FROM users WHERE fid = ?", (player_id,)).fetchone()
+            if not row or row[0] in (None, ""):
+                return None
+            from .regions import verify_member_kid
+            kid, _changed = await verify_member_kid(player_id, row[0], stored=current_kid)
+            return kid
+        except Exception as e:
+            logger.warning("[GiftAPI] region repair failed for %s: %s", player_id, e)
+            return None
+
+    async def claim_giftcode_rewards_wos(self, player_id, giftcode, *, force=False):
+        """Redeem `giftcode` for `player_id`.
+
+        `force=True` ignores the cached result for this (fid, code) and asks
+        upstream again — used by the daily re-check of members who did not meet
+        a code's recharge/VIP requirement earlier.
+        """
         try:
             conn = DatabaseManager.instance().get("giftcode")
 
-            if player_id != WOS_TEST_PLAYER_ID:
+            if player_id != WOS_TEST_PLAYER_ID and not force:
                 cursor = conn.execute("""
                     SELECT status FROM user_giftcodes
                     WHERE fid = ? AND giftcode = ?
@@ -214,7 +279,9 @@ class GiftCodeClaimer:
                         "kid": f"{kid}",
                         "time": f"{int(datetime.now().timestamp())}",
                     })
-                    async with session.post(self.wos_giftcode_url, headers=self._api_headers, data=data) as response:
+                    async with game_queue().slot(), session.post(
+                        self.wos_giftcode_url, headers=self._api_headers, data=data
+                    ) as response:
                         try:
                             response_json = await response.json(content_type=None)
                         except (json.JSONDecodeError, ValueError):
@@ -227,6 +294,8 @@ class GiftCodeClaimer:
                     # conflated with 40020/KID_MISMATCH.
                     if response_json.get("err_code") == 40019 and attempt < 2:
                         logger.debug("[GiftAPI] per-FID throttle (40019) for %s - waiting 5s", player_id)
+                        # Slow every feature down, not just this redemption.
+                        game_queue().pause(5, "40019 per-FID throttle")
                         await asyncio.sleep(5)
                         continue
                     break
@@ -255,19 +324,43 @@ class GiftCodeClaimer:
                     status = "STOVE_LV_ERROR"
                 elif err_code == 40010:
                     status = "SPEND_MORE"        # player level/spend too low for this code
+                elif err_code == 40017:
+                    # "RECHARGE MONEY ERROR." - the code is tied to a purchase
+                    # the player has not made. Nothing the bot can do now, but
+                    # it can change once the player recharges.
+                    status = "RECHARGE_REQUIRED"
+                elif err_code == 40018:
+                    status = "VIP_REQUIRED"      # "RECHARGE MONEY VIP ERROR."
                 elif err_code == 40019:
                     status = "RATE_LIMITED"      # per-FID throttle (retries exhausted)
                 elif err_code == 40001:
                     status = "ROLE_NOT_EXIST"    # legacy captcha flow only
                 elif err_code == 40020:
-                    # USER INFO ERROR - upstream could not resolve this fid/kid.
-                    # Transient during the 2026-07 backend migration; retryable.
-                    # Quiet for the periodic test-player ping (recurring noise);
-                    # keep it visible for real members (may signal a wrong kid).
+                    # USER INFO ERROR - upstream could not resolve this fid+kid.
+                    # Two causes: a transient backend hiccup, or a stale kingdom
+                    # (the player transferred states), which would otherwise fail
+                    # every future redemption for him. Re-probe the alliance's
+                    # regions once: if another kingdom answers, it is stored and
+                    # the redemption is retried with it.
                     if player_id == WOS_TEST_PLAYER_ID:
                         logger.debug("USER INFO ERROR (40020) for test player %s kid=%s - upstream transient", player_id, kid)
+                    elif player_id in self._kid_repair_attempted:
+                        # Already probed this run and nothing resolved: keep the
+                        # log readable instead of repeating the same warning for
+                        # every code in every cycle (this used to fill the log
+                        # with hundreds of identical lines for one member).
+                        logger.debug(
+                            "USER INFO ERROR (40020) for %s kid=%s - already probed, still unresolved",
+                            player_id, kid,
+                        )
+                        repaired = None
                     else:
-                        logger.warning("USER INFO ERROR (40020) for %s kid=%s - upstream transient", player_id, kid)
+                        logger.warning("USER INFO ERROR (40020) for %s kid=%s - re-checking region", player_id, kid)
+                        repaired = await self._repair_kid(player_id, kid)
+                        if repaired and str(repaired) != str(kid):
+                            logger.info("[GiftAPI] region repaired for %s: %s -> %s, retrying redemption",
+                                        player_id, kid, repaired)
+                            return await self.claim_giftcode_rewards_wos(player_id, giftcode)
                     # Distinct status so the retry loop can track persistently
                     # unresolvable members (wrong kid / gone) and flag them.
                     status = "USER_INFO_ERROR"
@@ -275,15 +368,21 @@ class GiftCodeClaimer:
                     # Surface the real API reason instead of a bare "ERROR"
                     # (e.g. captcha errors, unknown codes) so failure reports
                     # are diagnostic. Format: ERROR_<code>_<MSG>.
-                    msg_slug = re.sub(r'[^A-Z0-9]+', '_', (msg or 'UNKNOWN').upper()).strip('_')
+                    # `msg` is whatever upstream sent - occasionally a number,
+                    # which used to crash here with "'int' object has no
+                    # attribute 'upper'" and abort the whole redemption.
+                    msg_slug = re.sub(
+                        r'[^A-Z0-9]+', '_', str(msg or 'UNKNOWN').upper()
+                    ).strip('_')
                     status = f"ERROR_{err_code}_{msg_slug}" if err_code else f"ERROR_{msg_slug}"
 
-                if player_id != WOS_TEST_PLAYER_ID and status in ["SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE", "STOVE_LV_ERROR"]:
+                if player_id != WOS_TEST_PLAYER_ID and status in PERSISTED_STATUSES:
                     try:
                         conn.execute("""
-                            INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status)
-                            VALUES (?, ?, ?)
-                        """, (player_id, giftcode, status))
+                            INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status, updated_at)
+                            VALUES (?, ?, ?, ?)
+                        """, (player_id, giftcode, status,
+                              datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                         conn.commit()
                         logger.info("DATABASE - Updated: User %s, Code %s, Status %s", player_id, giftcode, status)
                     except Exception as e:

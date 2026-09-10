@@ -353,6 +353,8 @@ if __name__ == "__main__":
             "cogs.gift_scraper",
             "cogs.screenshot_add",
             "cogs.regions",
+            "cogs.wosatlas_sync",
+            "cogs.giftcode_report",
         ]
         for ext in extensions:
             try:
