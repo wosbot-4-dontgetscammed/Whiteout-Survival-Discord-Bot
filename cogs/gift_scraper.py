@@ -354,7 +354,17 @@ class GiftScraper(commands.Cog):
         on; only a definitive expired/not-found/used verdict marks a code
         invalid, and only a real redemption result marks it valid.
         """
-        valid = ("SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE", "STOVE_LV_ERROR")
+        # Upstream only evaluates the code AFTER it has accepted fid+kid, so a
+        # gate on the PLAYER (furnace too low, recharge/VIP missing) still
+        # proves the code itself is real. Treating those as "valid" keeps a
+        # low-level or non-paying validator from discarding good codes.
+        valid = (
+            "SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE",
+            "STOVE_LV_ERROR",       # 40006 furnace too low for this code
+            "RECHARGE_REQUIRED",    # 40017 tied to a purchase the player lacks
+            "VIP_REQUIRED",         # 40018 VIP gate
+            "SPEND_MORE",           # 40010 spend/level gate
+        )
         invalid = ("TIME_ERROR", "CDK_NOT_FOUND", "USAGE_LIMIT")
         for fid in self._validation_fids():
             try:

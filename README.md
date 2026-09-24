@@ -95,6 +95,19 @@ hold each code, which codes are complete, which are still short. The pre-existin
 summaries only appear on an event — the distribution summary when a new code arrives,
 the retry summary only when a retry actually happened — so a quiet day showed nothing.
 
+### The gift-code validator
+
+Before a code is sent to an alliance it is tried once against `WOS_TEST_PLAYER_ID`.
+Since the 2026-07 API change that account **must be a registered member**: redemption
+requires a kingdom id, and an account without one answers `NO_KID` to every check, which
+silently tells you nothing. The bot now logs which validator it uses at startup and warns
+if it has no kingdom or a low furnace.
+
+Pick an account with a **high furnace** and, ideally, purchases on it: codes can be gated
+on furnace level (`40006`), recharge (`40017`) or VIP (`40018`). A gate on the *player*
+still proves the *code* is real, so the scraper counts those verdicts as valid rather than
+discarding the code — but a validator that can actually redeem them gives a clean answer.
+
 Statuses counted as redeemed: `SUCCESS`, `RECEIVED`, `SAME TYPE EXCHANGE`. Anything else
 (e.g. `USER_INFO_ERROR`, `CAPTCHA_FAILED`) is reported as a failure so it can be chased.
 

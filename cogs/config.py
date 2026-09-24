@@ -45,6 +45,55 @@ def validate_config():
         _logger.warning("WOS_ENCRYPT_KEY not set in .env - API requests will fail")
     if not WOSLAND_API_KEY:
         _logger.info("GIFTCODE_API_KEY not set - community gift code sync disabled")
+    _validate_test_player()
+
+
+def _validate_test_player():
+    """The gift-code validator must be an account we control, with a kingdom on
+    file and a high furnace.
+
+    Since the 2026-07 API change a redemption needs `kid`; a validator without
+    one answers NO_KID to every check, which tells us nothing. A low furnace is
+    also a poor validator: furnace-gated codes come back STOVE_LV_ERROR instead
+    of a clean verdict.
+    """
+    if not WOS_TEST_PLAYER_ID:
+        _logger.warning("WOS_TEST_PLAYER_ID not set - gift-code validation disabled")
+        return
+    try:
+        from .database import DatabaseManager
+        row = DatabaseManager.instance().get("users").execute(
+            "SELECT nickname, furnace_lv, kid FROM users WHERE fid = ?",
+            (WOS_TEST_PLAYER_ID,),
+        ).fetchone()
+    except Exception as e:
+        _logger.debug("could not check WOS_TEST_PLAYER_ID: %s", e)
+        return
+
+    if not row:
+        _logger.warning(
+            "WOS_TEST_PLAYER_ID %s is not a registered member - it has no kingdom on "
+            "file, so every gift-code validation will return NO_KID",
+            WOS_TEST_PLAYER_ID,
+        )
+        return
+    nickname, furnace_lv, kid = row
+    if not kid:
+        _logger.warning(
+            "gift-code validator %s (%s) has no kingdom on file - validation will "
+            "return NO_KID", WOS_TEST_PLAYER_ID, nickname,
+        )
+        return
+    _logger.info(
+        "gift-code validator: %s (%s) furnace %s, state %s",
+        WOS_TEST_PLAYER_ID, nickname, furnace_lv, kid,
+    )
+    if isinstance(furnace_lv, int) and furnace_lv < 30:
+        _logger.warning(
+            "gift-code validator %s has furnace %s - level-gated codes will answer "
+            "STOVE_LV_ERROR instead of a clean verdict; prefer a high-furnace account",
+            nickname, furnace_lv,
+        )
 
 # Furnace level mapping (shared across multiple cogs)
 LEVEL_MAPPING = {

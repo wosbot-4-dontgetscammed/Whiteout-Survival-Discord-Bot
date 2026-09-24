@@ -44,6 +44,15 @@ The game's own player endpoint stayed dead, so profile data now comes from the
   after a `40020 USER INFO ERROR` before falling back to kingdom probing.
 
 **Changed**
+- Gift-code validation now runs against a high-furnace account we control
+  (`WOS_TEST_PLAYER_ID`), and `validate_config()` reports it at startup — warning when the
+  validator is not a registered member (every check would answer `NO_KID`), has no kingdom
+  on file, or has a furnace low enough that level-gated codes answer `STOVE_LV_ERROR`
+  instead of a clean verdict.
+- The scraper treats player-side gates (`RECHARGE_REQUIRED`, `VIP_REQUIRED`, `SPEND_MORE`)
+  as proof that a code exists, alongside the `STOVE_LV_ERROR` case it already handled:
+  upstream only evaluates the code after accepting fid+kid, so a gate on the player says
+  nothing bad about the code.
 - The alliance member check remembers when it last ran (`control_last_run`), so a restart
   no longer triggers an immediate full re-check; the alliance waits out the remainder of
   its interval. Default interval raised to 6 hours.
