@@ -1,6 +1,9 @@
 #!/bin/bash
 #
-# Control the dedicated scanner emulator (Pixel7_Scan, port 5560).
+# Control the dedicated scanner emulator (Pixel7_Scan, port 5562).
+#
+# Port 5562 on purpose: the autopilot's tools/newaccount documents 5560 for a
+# new PLAY account, and the two must never claim the same adb serial.
 #
 # It is deliberately NOT run continuously: a booted emulator costs ~45% of one
 # CPU even while idle, so the scanner boots it for a run and shuts it down
@@ -14,7 +17,7 @@
 set -u
 
 AVD="Pixel7_Scan"
-PORT=5560
+PORT=5562
 SERIAL="emulator-${PORT}"
 PKG="com.gof.global"
 
