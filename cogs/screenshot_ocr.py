@@ -1,15 +1,20 @@
-"""Offline profile-screenshot OCR using Apple Vision (macOS).
+"""Offline profile-screenshot OCR (Apple Vision on macOS, RapidOCR elsewhere).
 
 Since 2026-07 there is no API that returns a WOS player's nickname/furnace
 from a FID (see project_api_change_2026_07). The only offline substitute is
-reading them from a profile screenshot. This module shells out to the bundled
-Swift helper ``bin/ocr_vision`` which runs ``VNRecognizeTextRequest`` on-device:
-free, offline, no API key, and — unlike ddddocr — it reads unicode/emoji
-nicknames correctly.
+reading them from a profile screenshot. Two backends, picked automatically:
 
-The helper prints one JSON object per recognised text line:
-``{"t": text, "x":.., "y":.., "w":.., "h":.., "c": confidence}`` with
-normalised coordinates (origin bottom-left, Vision convention).
+* ``bin/ocr_vision`` - bundled Swift helper running ``VNRecognizeTextRequest``
+  on-device (macOS only). Preferred when present: unlike ddddocr it reads
+  unicode/emoji nicknames correctly.
+* RapidOCR (PP-OCR models on onnxruntime) - used when the helper is missing,
+  e.g. in the Linux/Docker deployment. Optional dependency, see the Dockerfile
+  note in ``available()``.
+
+Both are free, offline and need no API key. Either way the result is a list of
+recognised text lines ``{"t": text, "x":.., "y":.., "w":.., "h":.., "c":
+confidence}`` with normalised coordinates (origin bottom-left, Vision
+convention).
 """
 
 import asyncio
@@ -23,17 +28,33 @@ logger = get_logger("screenshot_ocr")
 
 _HELPER = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bin", "ocr_vision")
 
+_rapid_engine = None
 
-def available() -> bool:
-    """True if the compiled OCR helper is present and executable."""
+
+def _vision_available() -> bool:
     return os.path.isfile(_HELPER) and os.access(_HELPER, os.X_OK)
 
 
-async def ocr_lines(image_path: str) -> list[dict]:
-    """Run Vision OCR on an image; return recognised text lines (or [])."""
-    if not available():
-        logger.warning("OCR helper not found/executable at %s", _HELPER)
-        return []
+def _rapid_available() -> bool:
+    try:
+        import rapidocr  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def available() -> bool:
+    """True if an OCR backend is usable on this host.
+
+    RapidOCR must be installed with ``pip install --no-deps rapidocr`` plus its
+    pure dependencies: its declared ``opencv-python`` dependency would replace
+    ``opencv-python-headless`` and break ``cv2`` (and with it ddddocr) on
+    hosts without X11 libraries.
+    """
+    return _vision_available() or _rapid_available()
+
+
+async def _vision_lines(image_path: str) -> list[dict]:
     try:
         proc = await asyncio.create_subprocess_exec(
             _HELPER, image_path,
@@ -57,6 +78,52 @@ async def ocr_lines(image_path: str) -> list[dict]:
         except Exception:
             pass
     return lines
+
+
+def _rapid_lines_sync(image_path: str) -> list[dict]:
+    global _rapid_engine
+    import logging
+    from PIL import Image
+    from rapidocr import RapidOCR
+
+    if _rapid_engine is None:
+        logging.getLogger("RapidOCR").setLevel(logging.WARNING)
+        _rapid_engine = RapidOCR()
+    with Image.open(image_path) as im:
+        width, height = im.size
+    res = _rapid_engine(image_path)
+    if res is None or res.txts is None:
+        return []
+
+    lines = []
+    for box, txt, score in zip(res.boxes, res.txts, res.scores):
+        xs = [float(p[0]) for p in box]
+        ys = [float(p[1]) for p in box]
+        # Pixel quad (origin top-left) -> normalised rect, origin bottom-left.
+        lines.append({
+            "t": txt,
+            "x": min(xs) / width,
+            "y": 1 - max(ys) / height,
+            "w": (max(xs) - min(xs)) / width,
+            "h": (max(ys) - min(ys)) / height,
+            "c": float(score),
+        })
+    return lines
+
+
+async def ocr_lines(image_path: str) -> list[dict]:
+    """Run OCR on an image; return recognised text lines (or [])."""
+    if _vision_available():
+        return await _vision_lines(image_path)
+    if _rapid_available():
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(_rapid_lines_sync, image_path), timeout=60)
+        except Exception as e:
+            logger.warning("RapidOCR failed: %s", e)
+            return []
+    logger.warning("No OCR backend available (no %s, no rapidocr)", _HELPER)
+    return []
 
 
 # Field patterns, calibrated against the real WOS "Profil des Gouverneurs" /

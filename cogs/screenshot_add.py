@@ -1,4 +1,4 @@
-"""Add a member from a profile screenshot using offline OCR (Apple Vision).
+"""Add a member from a profile screenshot using offline OCR (see screenshot_ocr).
 
 Since 2026-07 there is no API that returns a WOS player's nickname/furnace from
 a FID (see project_api_change_2026_07). This command lets an admin upload a
@@ -145,7 +145,7 @@ class ScreenshotAdd(commands.Cog):
             return
         if not screenshot_ocr.available():
             await interaction.response.send_message(
-                "OCR helper is not available on this host (bin/ocr_vision missing).", ephemeral=True)
+                "No OCR backend is available on this host (bin/ocr_vision or rapidocr).", ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True, thinking=True)

@@ -23,7 +23,7 @@ Around **2026-07-21** CenturyGame changed the Whiteout Survival gift API: the `/
 - **WoS Atlas player data** — nickname, furnace level and state are read from the
   [WoS Atlas](https://wosatlas.com) community index instead, so alliance control keeps
   working. See [the section below](#-wos-atlas-as-the-player-data-source).
-- **Screenshot add** (`/add_screenshot`, macOS) — recover a member's nickname/furnace from a profile screenshot via on-device Apple Vision OCR (offline, no API key). Build the helper with `swiftc -O tools/ocr_vision.swift -o bin/ocr_vision`.
+- **Screenshot add** (`/add_screenshot`) — recover a member's nickname/furnace from a profile screenshot via on-device OCR (offline, no API key). On macOS build the Apple Vision helper with `swiftc -O tools/ocr_vision.swift -o bin/ocr_vision`; elsewhere install RapidOCR as fallback (see CHANGELOG, 2026-10).
 - **Inactive members** — members that are unresolvable for several cycles (moved to an untracked kingdom / gone) are flagged inactive and skipped, with `/inactive_members` to review and reactivate.
 - **Resilient gift-code scraper** — validates candidates against several resolving players; a dead validator can no longer discard valid codes.
 - **Local backups** — encrypted-or-plain backups now write to `backups/` (the old upload API is defunct).

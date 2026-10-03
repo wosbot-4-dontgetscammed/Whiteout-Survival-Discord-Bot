@@ -10,6 +10,14 @@ Versions refer to fork milestones, not upstream releases.
 
 ## [Unreleased]
 
+### 2026-10 — Screenshot OCR off macOS
+- `/add_screenshot` no longer needs macOS: when `bin/ocr_vision` is missing,
+  `cogs/screenshot_ocr.py` falls back to [RapidOCR](https://github.com/RapidAI/RapidOCR)
+  (PP-OCR on onnxruntime, offline). Install it with `pip install --no-deps rapidocr`
+  plus `pyclipper shapely omegaconf PyYAML six tqdm colorlog` — its declared
+  `opencv-python` dependency would replace `opencv-python-headless` and break
+  `cv2`/ddddocr on hosts without X11 libraries.
+
 ### 2026-09 — WoS Atlas as replacement player-data source
 The game's own player endpoint stayed dead, so profile data now comes from the
 [WoS Atlas](https://wosatlas.com) community index (free account required).
